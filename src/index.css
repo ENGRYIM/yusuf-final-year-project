@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 213 55% 17%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 213 55% 17%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 213 55% 17%;
+
+    --primary: 213 54% 17%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 213 54% 17%;
+
+    --muted: 210 40% 94%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 37 91% 55%;
+    --accent-foreground: 213 54% 17%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 37 91% 55%;
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --background: 213 54% 10%;
+    --foreground: 210 40% 96%;
+
+    --card: 213 47% 14%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 213 47% 14%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 37 91% 55%;
+    --primary-foreground: 213 54% 12%;
+
+    --secondary: 213 40% 20%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 213 40% 20%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 37 91% 55%;
+    --accent-foreground: 213 54% 12%;
+
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 210 40% 96%;
+
+    --border: 213 40% 22%;
+    --input: 213 40% 22%;
+    --ring: 37 91% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    color-scheme: light dark;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+  /* Keyboard focus should always be clearly visible */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+  /* Numeric readouts line up column-to-column */
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+}
+
+/* Visually-hidden skip link that appears on focus */
+.skip-link {
+  @apply absolute left-4 top-4 z-[100] -translate-y-20 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-transform focus-visible:translate-y-0;
+}
+
+/* Honour users who prefer less motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Faint dotted grid for empty desktop canvas — reads intentional, not blank */
+.bg-grid {
+  background-image: radial-gradient(
+    hsl(var(--foreground) / 0.05) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+}
