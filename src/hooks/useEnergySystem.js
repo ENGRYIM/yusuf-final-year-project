@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { ref, onValue, update } from 'firebase/database'
+import { db, firebaseEnabled } from '@/lib/firebase'
+import { flatsFromSnapshot, toRtdbWrite } from '@/lib/flatMapper'
 import {
   INITIAL_FLATS,
   TARIFF_RATE,
@@ -17,15 +20,20 @@ export function useEnergySystem() {
   const [flats, setFlats] = useState(() => clone(INITIAL_FLATS))
   const [history, setHistory] = useState([])
   const [samples, setSamples] = useState([]) // time-series for charts
+  // Where the flat data is coming from: 'live' once Realtime Database has
+  // streamed us data, otherwise 'sim' (the local billing simulation fallback).
+  const [source, setSource] = useState('sim')
   // Demo billing speed: 1 real second is billed as this many simulated
   // minutes so balances visibly drain during a demo. 0 = paused.
   const [speed, setSpeed] = useState(60)
   const speedRef = useRef(speed)
+  const sourceRef = useRef(source)
   const warnedRef = useRef({})
   const idRef = useRef(1)
   const prevRelays = useRef(INITIAL_FLATS.map((f) => f.relayOn))
   const flatsRef = useRef(flats)
   speedRef.current = speed
+  sourceRef.current = source
   flatsRef.current = flats
 
   const pushHistory = useCallback((flat, type, amount = 0, note = '') => {
@@ -34,9 +42,71 @@ export function useEnergySystem() {
     )
   }, [])
 
+  // ── Realtime Database subscription ──
+  // When live data is present it becomes the source of truth; the local
+  // simulation below stands down. If Firebase is unconfigured, empty, or errors,
+  // we stay on the simulation so the demo still works offline.
+  useEffect(() => {
+    if (!firebaseEnabled || !db) return
+    const flatsDbRef = ref(db, 'flats')
+    const unsub = onValue(
+      flatsDbRef,
+      (snap) => {
+        const val = snap.val()
+        if (val && typeof val === 'object' && Object.keys(val).length) {
+          setFlats((prev) => flatsFromSnapshot(val, prev))
+          setSource('live')
+          sourceRef.current = 'live'
+        } else {
+          setSource('sim')
+          sourceRef.current = 'sim'
+        }
+      },
+      (err) => {
+        console.error('[firebase] flats read failed', err)
+        setSource('sim')
+        sourceRef.current = 'sim'
+        toast.error('Firebase read failed — using local simulation')
+      }
+    )
+    return () => unsub()
+  }, [])
+
+  // Apply a mutation either to Realtime Database (when live) or to local state
+  // (simulation). `mutate(next)` mutates a cloned flats array in place and
+  // returns the ids of the flats it touched so we know what to push to RTDB.
+  const commit = useCallback((mutate) => {
+    const live = sourceRef.current === 'live' && firebaseEnabled && db
+    if (live) {
+      const next = clone(flatsRef.current)
+      const ids = mutate(next) || []
+      setFlats(next) // optimistic; the onValue listener reconciles
+      const updates = {}
+      for (const id of ids) {
+        const f = next.find((x) => x.id === id)
+        if (!f) continue
+        const w = toRtdbWrite(f)
+        for (const k in w) updates[`${id}/${k}`] = w[k]
+      }
+      update(ref(db, 'flats'), updates).catch((e) => {
+        console.error('[firebase] write failed', e)
+        toast.error('Failed to sync to Firebase')
+      })
+    } else {
+      setFlats((prev) => {
+        const next = clone(prev)
+        mutate(next)
+        return next
+      })
+    }
+  }, [])
+
   // ── Billing tick (runs every second) ──
   useEffect(() => {
     const id = setInterval(() => {
+      // Live data from the hardware owns the meters and balances — don't
+      // simulate on top of it. Only run the sim as the offline fallback.
+      if (sourceRef.current === 'live') return
       const simMinutes = speedRef.current
       if (simMinutes <= 0) return
       const elapsedHours = simMinutes / 60
@@ -116,7 +186,7 @@ export function useEnergySystem() {
   useEffect(() => {
     flats.forEach((f, i) => {
       const was = prevRelays.current[i]
-      if (was !== f.relayOn) {
+      if (was !== undefined && was !== f.relayOn) {
         if (f.relayOn) {
           toast.success(`${f.name}: power restored`)
           pushHistory(i, 'power_on')
@@ -181,8 +251,7 @@ export function useEnergySystem() {
       toast.error('Invalid amount')
       return false
     }
-    setFlats((prev) => {
-      const next = clone(prev)
+    commit((next) => {
       const f = next[i]
       f.balance += amt
       if (f.emergencyOwed > 0) {
@@ -195,12 +264,12 @@ export function useEnergySystem() {
         }
       }
       if (!f.relayOn && f.balance > 0) f.relayOn = true
-      return next
+      return [f.id]
     })
     toast.success(`Recharged ${amt.toFixed(2)} NGN`)
     pushHistory(i, 'recharge', amt)
     return true
-  }, [pushHistory])
+  }, [commit, pushHistory])
 
   // ── coreTransfer ──
   const transfer = useCallback((from, to, amt) => {
@@ -213,18 +282,17 @@ export function useEnergySystem() {
       toast.error('Insufficient balance')
       return false
     }
-    setFlats((prev) => {
-      const next = clone(prev)
+    commit((next) => {
       next[from].balance -= amt
       next[to].balance += amt
       if (!next[to].relayOn && next[to].balance > 0) next[to].relayOn = true
-      return next
+      return [next[from].id, next[to].id]
     })
     toast.success(`Transferred ${amt.toFixed(2)} NGN to ${flats[to].name}`)
     pushHistory(from, 'transfer_out', amt, flats[to].name)
     pushHistory(to, 'transfer_in', amt, flats[from].name)
     return true
-  }, [flats, pushHistory])
+  }, [flats, commit, pushHistory])
 
   // ── coreBorrow ──
   const borrow = useCallback((i) => {
@@ -234,19 +302,18 @@ export function useEnergySystem() {
       )
       return false
     }
-    setFlats((prev) => {
-      const next = clone(prev)
+    commit((next) => {
       const f = next[i]
       f.balance += EMERGENCY_AMT
       f.emergencyOwed = EMERGENCY_AMT
       f.emergencyUsed = true
       if (!f.relayOn) f.relayOn = true
-      return next
+      return [f.id]
     })
     toast.success(`Emergency credit of ${EMERGENCY_AMT.toFixed(2)} NGN granted`)
     pushHistory(i, 'borrow', EMERGENCY_AMT)
     return true
-  }, [flats, pushHistory])
+  }, [flats, commit, pushHistory])
 
   // ── Change PIN (verifies current PIN, mirrors the firmware's hashed store) ──
   const changePin = useCallback((i, current, next) => {
@@ -278,6 +345,7 @@ export function useEnergySystem() {
     flats,
     history,
     samples,
+    source,
     speed,
     setSpeed,
     isLocked,
