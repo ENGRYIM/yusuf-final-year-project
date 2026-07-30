@@ -120,6 +120,7 @@ export default function App() {
                 history={sys.history}
                 samples={sys.samples}
                 actions={actions}
+                borrowLimit={sys.borrowLimit}
                 onLogout={() => setFlatIndex(null)}
               />
             )}
