@@ -3,7 +3,7 @@ export const TARIFF_RATE = 50.0 // NGN per kWh
 export const LOW_BAL_WARN = 20.0 // NGN
 // Fallback used only until the live limit is read from Firebase
 // (settings/borrowLimit) — or when Firebase is unconfigured/offline.
-export const DEFAULT_BORROW_LIMIT = 100000.0 // NGN
+export const DEFAULT_BORROW_LIMIT = 100000.00 // NGN
 export const PIN_LENGTH = 4
 export const MAX_PIN_ATTEMPTS = 3
 export const LOCKOUT_MS = 30000 // 30 seconds
