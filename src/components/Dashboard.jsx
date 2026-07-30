@@ -32,15 +32,16 @@ import StatCard from '@/components/StatCard'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
 import ChangePinDialog from '@/components/ChangePinDialog'
-import { EMERGENCY_AMT, LOW_BAL_WARN, TARIFF_RATE, naira } from '@/lib/constants'
+import { LOW_BAL_WARN, TARIFF_RATE, naira } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
-export default function Dashboard({ flats, flatIndex, history, samples, actions, onLogout }) {
+export default function Dashboard({ flats, flatIndex, history, samples, actions, borrowLimit, onLogout }) {
   const flatHistory = history.filter((e) => e.flat === flatIndex)
   const f = flats[flatIndex]
   const [rechargeAmt, setRechargeAmt] = useState('')
   const [transferTo, setTransferTo] = useState('')
   const [transferAmt, setTransferAmt] = useState('')
+  const [borrowAmt, setBorrowAmt] = useState('')
 
   const low = f.balance > 0 && f.balance <= LOW_BAL_WARN
   const balancePct = Math.min(100, (f.balance / 500) * 100)
@@ -59,6 +60,9 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
   const submitTransfer = () => {
     if (transferTo === '') return
     if (actions.transfer(flatIndex, Number(transferTo), transferAmt)) setTransferAmt('')
+  }
+  const submitBorrow = () => {
+    if (actions.borrow(flatIndex, borrowAmt)) setBorrowAmt('')
   }
 
   return (
@@ -258,7 +262,7 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
                   <div className="rounded-lg border bg-muted/40 p-4 text-sm">
                     <p className="font-medium">Emergency credit</p>
                     <p className="mt-1 text-muted-foreground">
-                      Borrow {naira(EMERGENCY_AMT)} once to keep the lights on. It is
+                      Borrow up to {naira(borrowLimit)} to keep the lights on. It is
                       auto-repaid from your next recharge before any credit is added.
                     </p>
                     {f.emergencyUsed && (
@@ -267,13 +271,28 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
                       </p>
                     )}
                   </div>
+                  {!f.emergencyUsed && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="borrowAmt">Amount (₦)</Label>
+                      <Input
+                        id="borrowAmt"
+                        type="number"
+                        min="0"
+                        max={borrowLimit}
+                        inputMode="numeric"
+                        placeholder={`Up to ${borrowLimit.toFixed(2)}`}
+                        value={borrowAmt}
+                        onChange={(e) => setBorrowAmt(e.target.value)}
+                      />
+                    </div>
+                  )}
                   <Button
                     variant="accent"
                     className="w-full"
                     disabled={f.emergencyUsed}
-                    onClick={() => actions.borrow(flatIndex)}
+                    onClick={submitBorrow}
                   >
-                    Borrow {naira(EMERGENCY_AMT)}
+                    Borrow
                   </Button>
                 </TabsContent>
               </Tabs>
