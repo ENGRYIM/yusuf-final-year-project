@@ -101,8 +101,8 @@ export default function AdminGate({ onUnlock }) {
           </Button>
         </form>
 
-        <p className="mt-5 rounded-lg bg-muted/50 px-3 py-2 text-center text-xs text-muted-foreground">
-          Demo administrator PIN <b className="text-foreground">{ADMIN_PIN}</b>
+        <p className="mt-5 text-center text-xs text-muted-foreground">
+          Set in src/lib/constants.js (ADMIN_PIN).
         </p>
       </Card>
     </div>

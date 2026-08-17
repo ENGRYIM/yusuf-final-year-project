@@ -1,6 +1,6 @@
-import { LayoutGrid, Gauge, RotateCcw, Wifi, Zap } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { LayoutGrid, Gauge, Wifi, WifiOff, Zap } from 'lucide-react'
 import { AP_SSID } from '@/lib/constants'
+import { STATUS } from '@/hooks/useEnergySystem'
 import { cn } from '@/lib/utils'
 
 export const NAV = [
@@ -8,55 +8,28 @@ export const NAV = [
   { id: 'tenant', label: 'Tenant Portal', icon: Gauge },
 ]
 
-const SPEEDS = [
-  { v: 0, label: 'Pause' },
-  { v: 1, label: '1×' },
-  { v: 60, label: '60×' },
-  { v: 300, label: '300×' },
-]
-
-export function SpeedControl({ speed, setSpeed, className }) {
-  return (
-    <div className={className}>
-      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Billing speed
-      </p>
-      <div className="flex rounded-lg border bg-muted/50 p-0.5" role="group" aria-label="Billing speed">
-        {SPEEDS.map((s) => (
-          <button
-            key={s.v}
-            onClick={() => setSpeed(s.v)}
-            aria-pressed={speed === s.v}
-            className={cn(
-              'flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors',
-              speed === s.v
-                ? 'bg-background text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
+// How the live Realtime Database link is reported in the device panel.
+const LINK = {
+  [STATUS.LIVE]: { label: 'Live data', dot: 'bg-emerald-500', ok: true },
+  [STATUS.CONNECTING]: { label: 'Connecting…', dot: 'bg-amber-500', ok: true },
+  [STATUS.WAITING]: { label: 'No data yet', dot: 'bg-amber-500', ok: false },
+  [STATUS.UNCONFIGURED]: { label: 'Not configured', dot: 'bg-muted-foreground', ok: false },
+  [STATUS.ERROR]: { label: 'Link error', dot: 'bg-destructive', ok: false },
 }
 
 // Shared inner content for both the desktop sidebar and the mobile drawer.
-// Building-wide figures and the demo controls are administrator-only — a tenant
-// at the panel should not learn how many other flats are connected, nor be able
-// to reset the building's data.
+// Building-wide figures are administrator-only — a tenant at the panel should
+// not learn how many other flats are connected.
 export function SidebarContent({
   view,
   setView,
-  speed,
-  setSpeed,
+  status = STATUS.CONNECTING,
   flatCount = 0,
   onlineCount = 0,
-  reset,
   isAdmin = false,
   onNavigate,
 }) {
+  const link = LINK[status] ?? LINK[STATUS.CONNECTING]
   const go = (id) => {
     setView(id)
     onNavigate?.()
@@ -99,36 +72,29 @@ export function SidebarContent({
 
       <div className="flex-1" />
 
-      {/* Device status + controls */}
+      {/* Device link status — reports the real Realtime Database stream */}
       <div className="space-y-3 border-t p-4">
         <div className="rounded-lg border bg-muted/40 p-3">
           <div className="flex items-center justify-between">
             <span className="flex items-center gap-1.5 text-xs font-medium">
-              <Wifi className="h-3.5 w-3.5 text-emerald-500" />
+              {link.ok ? (
+                <Wifi className="h-3.5 w-3.5 text-emerald-500" />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5 text-muted-foreground" />
+              )}
               {AP_SSID}
             </span>
             <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              AP online
+              <span className={cn('h-1.5 w-1.5 rounded-full', link.dot)} />
+              {link.label}
             </span>
           </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">
-            {isAdmin ? `${onlineCount}/${flatCount} flats connected` : 'Connected'}
-          </p>
+          {isAdmin && status === STATUS.LIVE && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              {onlineCount}/{flatCount} flats connected
+            </p>
+          )}
         </div>
-        {isAdmin && (
-          <>
-            <SpeedControl speed={speed} setSpeed={setSpeed} />
-            <Button
-              variant="ghost"
-              size="sm"
-              className="w-full justify-start text-muted-foreground"
-              onClick={reset}
-            >
-              <RotateCcw className="h-4 w-4" /> Reset demo data
-            </Button>
-          </>
-        )}
       </div>
     </div>
   )

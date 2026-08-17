@@ -1,4 +1,13 @@
-import { Activity, Gauge, Lock, Power, Receipt, ShieldCheck, Zap } from 'lucide-react'
+import {
+  Activity,
+  Gauge,
+  Lock,
+  Power,
+  Receipt,
+  RotateCcw,
+  ShieldCheck,
+  Zap,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -6,8 +15,9 @@ import { Progress } from '@/components/ui/progress'
 import StatCard from '@/components/StatCard'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
+import MonthlyHistory from '@/components/MonthlyHistory'
 import {
-  INITIAL_FLATS,
+  DEFAULT_FLAT_PIN,
   LOW_BAL_WARN,
   TARIFF_LABEL,
   costOf,
@@ -21,7 +31,13 @@ const BARS = ['bg-accent', 'bg-primary', 'bg-emerald-500']
 
 // Administrator-only view: it aggregates every flat, so App only renders it once
 // the admin PIN has been accepted.
-export default function BuildingOverview({ flats, history = [], samples = [], onLock }) {
+export default function BuildingOverview({
+  flats,
+  history = [],
+  samples = [],
+  onLock,
+  onResetPins,
+}) {
   const totalPower = flats.reduce((s, f) => (f.relayOn ? s + f.meter.powerW : s), 0)
   const totalDaily = flats.reduce((s, f) => s + f.dailyEnergy, 0)
   const totalConsumed = flats.reduce((s, f) => s + f.totalEnergy, 0)
@@ -165,6 +181,24 @@ export default function BuildingOverview({ flats, history = [], samples = [], on
         </CardContent>
       </Card>
 
+      {/* Monthly history, per flat — read from flats/<id>/monthly in RTDB */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Monthly history</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6 pt-0">
+          {flats.map((f) => (
+            <div key={f.id || f.name}>
+              <p className="mb-1 flex items-center gap-2 text-sm font-semibold">
+                <Zap className="h-4 w-4 text-accent" />
+                {f.name}
+              </p>
+              <MonthlyHistory rows={f.monthly} />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
       {/* Demo aid: these PINs used to be printed on the public login screen, which
           let any tenant sign into any flat. Only the factory default is shown — a
           PIN the tenant has since chosen is theirs, and not the landlord's to read. */}
@@ -174,17 +208,16 @@ export default function BuildingOverview({ flats, history = [], samples = [], on
         </CardHeader>
         <CardContent className="pt-0">
           <p className="mb-3 text-xs text-muted-foreground">
-            Factory defaults for the demo. Once a tenant sets their own PIN it stops
-            being shown here — use “Reset demo data” to restore the defaults if one
-            is forgotten.
+            A flat still on the factory PIN ({DEFAULT_FLAT_PIN}) is flagged here. Once
+            a tenant sets their own, it is theirs — not readable by anyone, including
+            you. Resetting is the only way back in if one is forgotten.
           </p>
           <div className="flex flex-wrap gap-2">
-            {flats.map((f, i) => {
-              const factory = INITIAL_FLATS[i]?.pin
-              const changed = Boolean(factory) && f.pin !== factory
+            {flats.map((f) => {
+              const changed = f.pin !== DEFAULT_FLAT_PIN
               return (
                 <span
-                  key={f.name}
+                  key={f.id || f.name}
                   className="rounded-lg border bg-muted/40 px-3 py-1.5 text-xs"
                 >
                   {f.name} ·{' '}
@@ -193,12 +226,22 @@ export default function BuildingOverview({ flats, history = [], samples = [], on
                       <Lock className="h-3 w-3" /> set by tenant
                     </span>
                   ) : (
-                    <b className="num text-foreground">{factory}</b>
+                    <b className="num text-foreground">{DEFAULT_FLAT_PIN}</b>
                   )}
                 </span>
               )
             })}
           </div>
+          {onResetPins && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-3 text-muted-foreground"
+              onClick={onResetPins}
+            >
+              <RotateCcw className="h-4 w-4" /> Reset all tenant PINs
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>

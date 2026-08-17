@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Zap } from 'lucide-react'
-import { useEnergySystem } from '@/hooks/useEnergySystem'
+import { STATUS, useEnergySystem } from '@/hooks/useEnergySystem'
 import { useTheme } from '@/hooks/useTheme'
 import Sidebar from '@/components/Sidebar'
 import MobileNav from '@/components/MobileNav'
@@ -9,6 +9,7 @@ import LoginScreen from '@/components/LoginScreen'
 import Dashboard from '@/components/Dashboard'
 import BuildingOverview from '@/components/BuildingOverview'
 import AdminGate from '@/components/AdminGate'
+import ConnectionState from '@/components/ConnectionState'
 
 function useClock() {
   const [now, setNow] = useState(() => new Date())
@@ -44,7 +45,7 @@ export default function App() {
   // PIN, balance, load or transactions crosses into the tenant components.
   const directory = sys.flats.map((f, i) => ({ i, name: f.name }))
   const onlineCount = sys.flats.filter((f) => f.relayOn).length
-  const tenantFlat = flatIndex === null ? null : sys.flats[flatIndex]
+  const tenantFlat = flatIndex === null ? null : sys.flats[flatIndex] ?? null
   const tenantHistory =
     flatIndex === null ? [] : sys.history.filter((e) => e.flat === flatIndex)
   const tenantSamples =
@@ -64,6 +65,10 @@ export default function App() {
     setView(next)
   }
 
+  // Without live flats there is nothing truthful to render, so both views hand
+  // over to ConnectionState instead of showing empty or invented figures.
+  const hasData = sys.status === STATUS.LIVE && sys.flats.length > 0
+
   return (
     <div className="min-h-screen bg-background">
       <a href="#main-content" className="skip-link">
@@ -73,11 +78,9 @@ export default function App() {
       <Sidebar
         view={view}
         setView={navigate}
-        speed={sys.speed}
-        setSpeed={sys.setSpeed}
+        status={sys.status}
         flatCount={sys.flats.length}
         onlineCount={onlineCount}
-        reset={sys.reset}
         isAdmin={isAdmin}
       />
 
@@ -88,11 +91,9 @@ export default function App() {
             <MobileNav
               view={view}
               setView={navigate}
-              speed={sys.speed}
-              setSpeed={sys.setSpeed}
+              status={sys.status}
               flatCount={sys.flats.length}
               onlineCount={onlineCount}
-              reset={sys.reset}
               isAdmin={isAdmin}
             />
             <div className="flex items-center gap-2">
@@ -136,18 +137,21 @@ export default function App() {
             key={contentKey}
             className="duration-300 animate-in fade-in-50 slide-in-from-bottom-2 motion-reduce:animate-none"
           >
-            {view === 'monitor' ? (
+            {!hasData ? (
+              <ConnectionState status={sys.status} errorMsg={sys.errorMsg} />
+            ) : view === 'monitor' ? (
               isAdmin ? (
                 <BuildingOverview
                   flats={sys.flats}
                   history={sys.history}
                   samples={sys.samples}
                   onLock={() => setIsAdmin(false)}
+                  onResetPins={sys.resetPins}
                 />
               ) : (
                 <AdminGate onUnlock={() => setIsAdmin(true)} />
               )
-            ) : flatIndex === null ? (
+            ) : flatIndex === null || !tenantFlat ? (
               <LoginScreen
                 directory={directory}
                 isLocked={sys.isLocked}

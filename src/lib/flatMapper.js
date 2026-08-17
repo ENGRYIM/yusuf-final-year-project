@@ -1,29 +1,47 @@
-// Translates between the Realtime Database flat record and the nested shape the
-// UI components expect. RTDB stores meter fields flat (voltage/current/powerW);
-// the app groups them under `meter`. PIN/lockout state has no RTDB counterpart
-// (it's device-side auth), so it's kept client-side and merged back in here.
-import { INITIAL_FLATS } from '@/lib/constants'
+// Translates the Realtime Database flat record into the shape the UI expects.
+// RTDB stores meter fields flat (voltage/current/powerW); the app groups them
+// under `meter`. PIN/lockout state has no RTDB counterpart (it's device-side
+// auth), so it's kept client-side and merged back in here.
+//
+// Everything the dashboard displays originates here — there is no local
+// simulation. If a field is missing the app shows nothing for it rather than
+// inventing a value.
+import { DEFAULT_FLAT_PIN, costOf, monthLabel } from '@/lib/constants'
 import { loadPins } from '@/lib/pinStore'
 
-// Client-only auth defaults, indexed to line up with the RTDB flat order.
-// A PIN the tenant set themselves wins over the demo default — otherwise going
-// live (or reloading) would quietly hand their flat back to the factory PIN.
-const authDefaults = (i, id) => ({
-  pin: loadPins()[id] ?? INITIAL_FLATS[i]?.pin ?? '0000',
+// Client-only auth defaults. A PIN the tenant set themselves wins over the
+// factory default — otherwise a reload would hand their flat back to '0000'.
+const authDefaults = (id) => ({
+  pin: loadPins()[id] ?? DEFAULT_FLAT_PIN,
   failedAttempts: 0,
   lockedUntil: 0,
 })
 
+// flats/<id>/monthly/<YYYY-MM> → newest-first rows for the history table.
+// `billed` falls back to the tariff cost of the energy when the device does not
+// publish it; `recharged` is left null (absent) rather than guessed at.
+export function monthlyFromRtdb(monthly) {
+  if (!monthly || typeof monthly !== 'object') return []
+  return Object.keys(monthly)
+    .filter((k) => /^\d{4}-\d{2}$/.test(k))
+    .sort((a, b) => (a < b ? 1 : -1))
+    .map((key) => {
+      const r = monthly[key] || {}
+      const energyKWh = Number(r.energyKWh ?? r.energy ?? 0) || 0
+      const billed = r.billed == null ? costOf(energyKWh) : Number(r.billed) || 0
+      const recharged = r.recharged == null ? null : Number(r.recharged) || 0
+      return { key, label: monthLabel(key), energyKWh, billed, recharged }
+    })
+}
+
 // RTDB record → app flat. `prevAuth` carries forward client-side auth state so a
 // live update from the hardware doesn't wipe a flat's failed attempts / lockout.
 export function fromRtdb(id, r, index, prevAuth) {
-  const auth = prevAuth ?? authDefaults(index, id)
+  const auth = prevAuth ?? authDefaults(id)
   const dailyEnergy = Number(r.dailyEnergy) || 0
-  // Hardware readings: an open relay must read no load regardless of what the
-  // last sample said, so the UI never shows power flowing to a cut-off flat.
+  // An open relay must read no load regardless of what the last sample said, so
+  // the UI never shows power flowing to a cut-off flat.
   const relayOn = Boolean(r.relayOn)
-  const powerW = relayOn ? Number(r.powerW) || 0 : 0
-  const voltage = Number(r.voltage) || 0
   return {
     id, // RTDB key, e.g. 'flat1' — needed to address writes
     name: r.name ?? `Flat ${index + 1}`,
@@ -36,13 +54,11 @@ export function fromRtdb(id, r, index, prevAuth) {
     emergencyUsed: Boolean(r.emergencyUsed),
     emergencyOwed: Number(r.emergencyOwed) || 0,
     lastUpdated: r.lastUpdated ?? null,
+    monthly: monthlyFromRtdb(r.monthly),
     meter: {
-      voltage,
+      voltage: Number(r.voltage) || 0,
       current: relayOn ? Number(r.current) || 0 : 0,
-      powerW,
-      // The flat's load profile, kept even while the relay is open so the
-      // offline simulation has something to fall back to.
-      baseW: Number(r.powerW) || 0,
+      powerW: relayOn ? Number(r.powerW) || 0 : 0,
     },
     pin: auth.pin,
     failedAttempts: auth.failedAttempts,
@@ -69,7 +85,7 @@ export function flatsFromSnapshot(flatsObj, prevFlats = []) {
     const prevAuth = prev
       ? { pin: prev.pin, failedAttempts: prev.failedAttempts, lockedUntil: prev.lockedUntil }
       : null
-    return fromRtdb(id, flatsObj[id], i, prevAuth)
+    return fromRtdb(id, flatsObj[id] || {}, i, prevAuth)
   })
 }
 

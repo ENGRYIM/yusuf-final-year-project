@@ -32,6 +32,7 @@ import StatCard from '@/components/StatCard'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
 import ChangePinDialog from '@/components/ChangePinDialog'
+import MonthlyHistory from '@/components/MonthlyHistory'
 import {
   LOW_BAL_WARN,
   TARIFF_LABEL,
@@ -208,6 +209,16 @@ export default function Dashboard({
                   />
                 </TabsContent>
               </Tabs>
+            </CardContent>
+          </Card>
+
+          {/* Monthly history — this flat's own rows from RTDB */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Monthly history</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <MonthlyHistory rows={f.monthly} />
             </CardContent>
           </Card>
 

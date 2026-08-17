@@ -3,16 +3,14 @@ import { toast } from 'sonner'
 import { ref, onValue, update, set } from 'firebase/database'
 import { db, firebaseEnabled } from '@/lib/firebase'
 import { flatsFromSnapshot, toRtdbWrite } from '@/lib/flatMapper'
-import { clearPins, loadPins, pinKey, savePin } from '@/lib/pinStore'
+import { clearPins, pinKey, savePin } from '@/lib/pinStore'
 import {
-  INITIAL_FLATS,
-  TARIFF_RATE,
+  TARIFF_LABEL,
   LOW_BAL_WARN,
   DEFAULT_BORROW_LIMIT,
+  DEFAULT_FLAT_PIN,
   MAX_PIN_ATTEMPTS,
   LOCKOUT_MS,
-  NOMINAL_VOLTAGE,
-  TARIFF_LABEL,
   unitsFor,
   kwh,
   naira,
@@ -20,60 +18,41 @@ import {
 
 const clone = (flats) => flats.map((f) => ({ ...f, meter: { ...f.meter } }))
 
-// Start the simulation from the PINs tenants actually set, not the demo defaults.
-const withStoredPins = (flats) => {
-  const stored = loadPins()
-  return flats.map((f, i) => {
-    const pin = stored[pinKey(f, i)]
-    return pin ? { ...f, pin } : f
-  })
+// Connection status, and the only source of truth about what the user is
+// looking at. There is no simulation: every figure on screen came from the
+// hardware via Realtime Database, or the screen says so plainly.
+//   unconfigured — no VITE_FIREBASE_* values, so we never even connect
+//   connecting   — subscribed, first snapshot not in yet
+//   waiting      — connected, but the meter has not published any flats
+//   live         — real flat data is streaming
+//   error        — the read failed (rules, network, bad URL)
+export const STATUS = {
+  UNCONFIGURED: 'unconfigured',
+  CONNECTING: 'connecting',
+  WAITING: 'waiting',
+  LIVE: 'live',
+  ERROR: 'error',
 }
 
-// One instantaneous meter reading for a flat, kept internally consistent:
-// P = V × I always holds, and an open relay reads no load at all.
-// Two out-of-phase sine terms give a smooth wander around the flat's base load
-// instead of the white noise a plain random() would produce.
-function readMeter(flat, index, seconds) {
-  const voltage = +(
-    NOMINAL_VOLTAGE * (1 + 0.015 * Math.sin(seconds / 7 + index))
-  ).toFixed(1)
-
-  if (!flat.relayOn) {
-    // Relay open: mains still present at the meter, but nothing flows.
-    return { voltage, current: 0, powerW: 0 }
-  }
-
-  const base = flat.meter.baseW
-  const wander =
-    0.06 * Math.sin(seconds / 5 + index * 2.1) +
-    0.03 * Math.sin(seconds / 1.7 + index)
-  const powerW = Math.max(0, +(base * (1 + wander)).toFixed(1))
-  return { voltage, current: +(powerW / voltage).toFixed(2), powerW }
-}
-
-// Central hook replicating the firmware's shared core logic (coreRecharge,
-// coreTransfer, coreBorrow, billingTick, authenticate) against dummy data.
+// Central hook over the firmware's shared core logic (coreRecharge,
+// coreTransfer, coreBorrow, authenticate) against live device data.
 export function useEnergySystem() {
-  const [flats, setFlats] = useState(() => withStoredPins(clone(INITIAL_FLATS)))
+  const [flats, setFlats] = useState([])
   const [history, setHistory] = useState([])
   const [samples, setSamples] = useState([]) // time-series for charts
-  // Where the flat data is coming from: 'live' once Realtime Database has
-  // streamed us data, otherwise 'sim' (the local billing simulation fallback).
-  const [source, setSource] = useState('sim')
-  // Demo billing speed: 1 real second is billed as this many simulated
-  // minutes so balances visibly drain during a demo. 0 = paused.
-  const [speed, setSpeed] = useState(60)
+  const [status, setStatus] = useState(
+    firebaseEnabled ? STATUS.CONNECTING : STATUS.UNCONFIGURED
+  )
+  const [errorMsg, setErrorMsg] = useState('')
   // Global borrow limit — lives at settings/borrowLimit in RTDB so it can be
   // changed (e.g. from the Firebase console) without redeploying the app.
   const [borrowLimit, setBorrowLimit] = useState(DEFAULT_BORROW_LIMIT)
-  const speedRef = useRef(speed)
-  const sourceRef = useRef(source)
+  const statusRef = useRef(status)
   const warnedRef = useRef({})
   const idRef = useRef(1)
-  const prevRelays = useRef(INITIAL_FLATS.map((f) => f.relayOn))
+  const prevRelays = useRef([])
   const flatsRef = useRef(flats)
-  speedRef.current = speed
-  sourceRef.current = source
+  statusRef.current = status
   flatsRef.current = flats
 
   const pushHistory = useCallback((flat, type, amount = 0, note = '') => {
@@ -94,9 +73,7 @@ export function useEnergySystem() {
   }, [])
 
   // ── Realtime Database subscription ──
-  // When live data is present it becomes the source of truth; the local
-  // simulation below stands down. If Firebase is unconfigured, empty, or errors,
-  // we stay on the simulation so the demo still works offline.
+  // The single source of flats, meter readings and monthly history.
   useEffect(() => {
     if (!firebaseEnabled || !db) return
     const flatsDbRef = ref(db, 'flats')
@@ -106,18 +83,19 @@ export function useEnergySystem() {
         const val = snap.val()
         if (val && typeof val === 'object' && Object.keys(val).length) {
           setFlats((prev) => flatsFromSnapshot(val, prev))
-          setSource('live')
-          sourceRef.current = 'live'
+          setStatus(STATUS.LIVE)
         } else {
-          setSource('sim')
-          sourceRef.current = 'sim'
+          // Connected, but nothing published yet — show the waiting state
+          // rather than stale flats from a previous snapshot.
+          setFlats([])
+          setStatus(STATUS.WAITING)
         }
+        setErrorMsg('')
       },
       (err) => {
         console.error('[firebase] flats read failed', err)
-        setSource('sim')
-        sourceRef.current = 'sim'
-        toast.error('Firebase read failed — using local simulation')
+        setStatus(STATUS.ERROR)
+        setErrorMsg(err?.message || 'Realtime Database read failed')
       }
     )
     return () => unsub()
@@ -151,97 +129,40 @@ export function useEnergySystem() {
     return () => unsub()
   }, [])
 
-  // Apply a mutation either to Realtime Database (when live) or to local state
-  // (simulation). `mutate(next)` mutates a cloned flats array in place and
-  // returns the ids of the flats it touched so we know what to push to RTDB.
+  // Apply a mutation to Realtime Database. `mutate(next)` mutates a cloned flats
+  // array in place and returns the ids of the flats it touched. With no local
+  // simulation to fall back on, a write with nothing connected is refused
+  // outright rather than silently changing numbers only this browser can see.
   const commit = useCallback((mutate) => {
-    const live = sourceRef.current === 'live' && firebaseEnabled && db
-    if (live) {
-      const next = clone(flatsRef.current)
-      const ids = mutate(next) || []
-      setFlats(next) // optimistic; the onValue listener reconciles
-      const updates = {}
-      for (const id of ids) {
-        const f = next.find((x) => x.id === id)
-        if (!f) continue
-        const w = toRtdbWrite(f)
-        for (const k in w) updates[`${id}/${k}`] = w[k]
-      }
-      update(ref(db, 'flats'), updates).catch((e) => {
-        console.error('[firebase] write failed', e)
-        toast.error('Failed to sync to Firebase')
+    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
+      toast.error('Not connected to the meter', {
+        description: 'Credit cannot be changed until live data is available.',
       })
-    } else {
-      setFlats((prev) => {
-        const next = clone(prev)
-        mutate(next)
-        return next
-      })
+      return false
     }
+    const next = clone(flatsRef.current)
+    const ids = mutate(next) || []
+    setFlats(next) // optimistic; the onValue listener reconciles
+    const updates = {}
+    for (const id of ids) {
+      const f = next.find((x) => x.id === id)
+      if (!f) continue
+      const w = toRtdbWrite(f)
+      for (const k in w) updates[`${id}/${k}`] = w[k]
+    }
+    update(ref(db, 'flats'), updates).catch((e) => {
+      console.error('[firebase] write failed', e)
+      toast.error('Failed to sync to Firebase')
+    })
+    return true
   }, [])
 
-  // ── Meter + billing tick (runs every second) ──
-  useEffect(() => {
-    const id = setInterval(() => {
-      // Live data from the hardware owns the meters and balances — don't
-      // simulate on top of it. Only run the sim as the offline fallback.
-      if (sourceRef.current === 'live') return
-      const simMinutes = speedRef.current
-      // Billing can be paused, but the meter keeps reading — pausing the demo
-      // clock must not look like the meter has died.
-      const elapsedHours = simMinutes > 0 ? simMinutes / 60 : 0
-      const seconds = Date.now() / 1000
-
-      setFlats((prev) => {
-        const next = clone(prev)
-        next.forEach((f, i) => {
-          const reading = readMeter(f, i, seconds)
-          f.meter.voltage = reading.voltage
-          f.meter.current = reading.current
-          f.meter.powerW = reading.powerW
-
-          if (!f.relayOn || elapsedHours === 0) return
-
-          const kWhThisTick = (reading.powerW / 1000) * elapsedHours
-          f.dailyEnergy += kWhThisTick
-          f.totalEnergy += kWhThisTick
-          f.balance -= kWhThisTick * TARIFF_RATE
-
-          // Auto-repay emergency debt as balance recovers.
-          if (f.emergencyOwed > 0 && f.balance > 0) {
-            const repay = Math.min(f.balance, f.emergencyOwed)
-            f.balance -= repay
-            f.emergencyOwed -= repay
-            if (f.emergencyOwed <= 0.01) {
-              f.emergencyOwed = 0
-              f.emergencyUsed = false
-            }
-          }
-
-          // Cut power when broke and no emergency credit in play.
-          // (Toast + history are handled by the relay-transition effect.)
-          if (f.balance <= 0 && !f.emergencyUsed) {
-            f.balance = 0
-            if (f.relayOn) {
-              f.relayOn = false
-              // Relay just opened — the meter must read zero immediately.
-              f.meter.powerW = 0
-              f.meter.current = 0
-            }
-          }
-        })
-        return next
-      })
-    }, 1000)
-    return () => clearInterval(id)
-  }, [])
-
-  // ── Sample the meters once a second for the charts (last ~45 points) ──
+  // ── Sample the live meters once a second for the charts (last ~45 points) ──
   useEffect(() => {
     const id = setInterval(() => {
       const fs = flatsRef.current
-      const d = new Date()
-      const label = d.toLocaleTimeString('en-GB', {
+      if (statusRef.current !== STATUS.LIVE || !fs.length) return
+      const label = new Date().toLocaleTimeString('en-GB', {
         minute: '2-digit',
         second: '2-digit',
       })
@@ -273,9 +194,13 @@ export function useEnergySystem() {
   }, [flats])
 
   // ── Relay connect/disconnect events (single source of truth) ──
+  // Keyed by flat id so a flat appearing or being reordered in the snapshot
+  // cannot be mistaken for a relay that changed state.
   useEffect(() => {
+    const prev = prevRelays.current
+    const prevById = new Map(prev.map((p) => [p.id, p.relayOn]))
     flats.forEach((f, i) => {
-      const was = prevRelays.current[i]
+      const was = prevById.get(f.id)
       if (was !== undefined && was !== f.relayOn) {
         if (f.relayOn) {
           toast.success(`${f.name}: power restored`)
@@ -286,17 +211,17 @@ export function useEnergySystem() {
         }
       }
     })
-    prevRelays.current = flats.map((f) => f.relayOn)
+    prevRelays.current = flats.map((f) => ({ id: f.id, relayOn: f.relayOn }))
   }, [flats, pushHistory])
 
   const isLocked = useCallback((i) => {
     const f = flats[i]
-    return f.lockedUntil > 0 && Date.now() < f.lockedUntil
+    return Boolean(f) && f.lockedUntil > 0 && Date.now() < f.lockedUntil
   }, [flats])
 
   const lockSecondsRemaining = useCallback((i) => {
     const f = flats[i]
-    if (!f.lockedUntil) return 0
+    if (!f || !f.lockedUntil) return 0
     return Math.max(0, Math.ceil((f.lockedUntil - Date.now()) / 1000))
   }, [flats])
 
@@ -314,8 +239,10 @@ export function useEnergySystem() {
     if (pin === f.pin) {
       setFlats((prev) => {
         const next = clone(prev)
-        next[i].failedAttempts = 0
-        next[i].lockedUntil = 0
+        if (next[i]) {
+          next[i].failedAttempts = 0
+          next[i].lockedUntil = 0
+        }
         return next
       })
       return { ok: true, msg: 'Authenticated' }
@@ -325,8 +252,10 @@ export function useEnergySystem() {
     const locked = attempts >= MAX_PIN_ATTEMPTS
     setFlats((prev) => {
       const next = clone(prev)
-      next[i].failedAttempts = attempts
-      if (locked) next[i].lockedUntil = Date.now() + LOCKOUT_MS
+      if (next[i]) {
+        next[i].failedAttempts = attempts
+        if (locked) next[i].lockedUntil = Date.now() + LOCKOUT_MS
+      }
       return next
     })
     return locked
@@ -344,7 +273,7 @@ export function useEnergySystem() {
       return false
     }
     let owedRepaid = 0
-    commit((next) => {
+    const ok = commit((next) => {
       const f = next[i]
       f.balance += amt
       if (f.emergencyOwed > 0) {
@@ -360,6 +289,7 @@ export function useEnergySystem() {
       if (!f.relayOn && f.balance > 0) f.relayOn = true
       return [f.id]
     })
+    if (!ok) return false
     const netUnits = unitsFor(amt - owedRepaid)
     toast.success(`Recharged ${naira(amt)} — units added ${kwh(netUnits)}`, {
       description: owedRepaid
@@ -377,16 +307,21 @@ export function useEnergySystem() {
       toast.error('Cannot transfer to self')
       return false
     }
+    if (!flats[from] || !flats[to]) {
+      toast.error('Unknown flat')
+      return false
+    }
     if (!amt || amt <= 0 || amt > flats[from].balance) {
       toast.error('Insufficient balance')
       return false
     }
-    commit((next) => {
+    const ok = commit((next) => {
       next[from].balance -= amt
       next[to].balance += amt
       if (!next[to].relayOn && next[to].balance > 0) next[to].relayOn = true
       return [next[from].id, next[to].id]
     })
+    if (!ok) return false
     toast.success(`Transferred ${naira(amt)} (${kwh(unitsFor(amt))}) to ${flats[to].name}`)
     pushHistory(from, 'transfer_out', amt, flats[to].name)
     pushHistory(to, 'transfer_in', amt, flats[from].name)
@@ -395,12 +330,13 @@ export function useEnergySystem() {
 
   // ── coreBorrow ──
   // amt is tenant-chosen, capped at the live global borrowLimit synced from
-  // Firebase (settings/borrowLimit). Falls back to DEFAULT_BORROW_LIMIT when
-  // no amount is passed, so existing callers keep working.
+  // Firebase (settings/borrowLimit). Falls back to the limit when no amount is
+  // passed, so existing callers keep working.
   const borrow = useCallback((i, amt = borrowLimit) => {
+    if (!flats[i]) return false
     if (flats[i].emergencyUsed) {
       toast.error(
-        `Emergency credit already in use. Repay ${flats[i].emergencyOwed.toFixed(2)} NGN first.`
+        `Emergency credit already in use. Repay ${naira(flats[i].emergencyOwed)} first.`
       )
       return false
     }
@@ -410,10 +346,10 @@ export function useEnergySystem() {
       return false
     }
     if (amt > borrowLimit) {
-      toast.error(`You can borrow up to ${borrowLimit.toFixed(2)} NGN`)
+      toast.error(`You can borrow up to ${naira(borrowLimit)}`)
       return false
     }
-    commit((next) => {
+    const ok = commit((next) => {
       const f = next[i]
       f.balance += amt
       f.emergencyOwed = amt
@@ -421,6 +357,7 @@ export function useEnergySystem() {
       if (!f.relayOn) f.relayOn = true
       return [f.id]
     })
+    if (!ok) return false
     toast.success(`Emergency credit of ${naira(amt)} (${kwh(unitsFor(amt))}) granted`)
     pushHistory(i, 'borrow', amt)
     return true
@@ -428,15 +365,16 @@ export function useEnergySystem() {
 
   // ── Change PIN (verifies current PIN, mirrors the firmware's hashed store) ──
   // The new PIN is persisted so it still works after a reload — a PIN that
-  // reverts to the demo default on refresh has not really been changed.
+  // reverts to the default on refresh has not really been changed.
   const changePin = useCallback((i, current, next) => {
     const f = flats[i]
+    if (!f) return { ok: false, msg: 'Unknown flat' }
     if (current !== f.pin) return { ok: false, msg: 'Current PIN is incorrect' }
     if (!/^\d{4}$/.test(next)) return { ok: false, msg: 'New PIN must be 4 digits' }
     if (next === current) return { ok: false, msg: 'New PIN must be different' }
     setFlats((prev) => {
       const n = clone(prev)
-      n[i].pin = next
+      if (n[i]) n[i].pin = next
       return n
     })
     const saved = savePin(pinKey(f, i), next)
@@ -449,26 +387,32 @@ export function useEnergySystem() {
     return { ok: true, msg: 'PIN updated' }
   }, [flats, pushHistory])
 
-  // ── Reset demo back to the initial state ──
-  // Also the way back in when a tenant forgets a PIN they set: nothing can read
-  // a chosen PIN back, so restoring the demo defaults is the recovery path.
-  const reset = useCallback(() => {
+  // ── Reset tenant PINs (administrator) ──
+  // The way back in when a tenant forgets the PIN they set: nothing can read a
+  // chosen PIN back, so restoring the factory default is the recovery path.
+  // Meter data is untouched — it belongs to the hardware.
+  const resetPins = useCallback(() => {
     clearPins()
-    setFlats(clone(INITIAL_FLATS))
-    setHistory([])
-    setSamples([])
-    warnedRef.current = {}
-    prevRelays.current = INITIAL_FLATS.map((f) => f.relayOn)
-    toast.success('Demo data reset', { description: 'Tenant PINs restored to defaults' })
+    setFlats((prev) => {
+      const next = clone(prev)
+      next.forEach((f) => {
+        f.pin = DEFAULT_FLAT_PIN
+        f.failedAttempts = 0
+        f.lockedUntil = 0
+      })
+      return next
+    })
+    toast.success('Tenant PINs reset', {
+      description: `Every flat is back to the default PIN (${DEFAULT_FLAT_PIN}).`,
+    })
   }, [])
 
   return {
     flats,
     history,
     samples,
-    source,
-    speed,
-    setSpeed,
+    status,
+    errorMsg,
     borrowLimit,
     isLocked,
     lockSecondsRemaining,
@@ -477,6 +421,6 @@ export function useEnergySystem() {
     transfer,
     borrow,
     changePin,
-    reset,
+    resetPins,
   }
 }
