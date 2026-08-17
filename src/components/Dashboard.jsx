@@ -32,26 +32,44 @@ import StatCard from '@/components/StatCard'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
 import ChangePinDialog from '@/components/ChangePinDialog'
-import { EMERGENCY_AMT, LOW_BAL_WARN, TARIFF_RATE, naira } from '@/lib/constants'
+import {
+  EMERGENCY_AMT,
+  LOW_BAL_WARN,
+  TARIFF_LABEL,
+  costOf,
+  kwh,
+  naira,
+  unitsFor,
+} from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
-export default function Dashboard({ flats, flatIndex, history, samples, actions, onLogout }) {
-  const flatHistory = history.filter((e) => e.flat === flatIndex)
-  const f = flats[flatIndex]
+// Tenant portal. It is handed only the signed-in flat (`flat`), a names-only
+// `directory` for choosing a transfer recipient, and that flat's own history and
+// chart samples — no other flat's figures are in scope here.
+export default function Dashboard({
+  flat: f,
+  flatIndex,
+  directory,
+  history,
+  samples,
+  actions,
+  onLogout,
+}) {
   const [rechargeAmt, setRechargeAmt] = useState('')
   const [transferTo, setTransferTo] = useState('')
   const [transferAmt, setTransferAmt] = useState('')
 
   const low = f.balance > 0 && f.balance <= LOW_BAL_WARN
   const balancePct = Math.min(100, (f.balance / 500) * 100)
-  const runtime =
-    f.relayOn && f.meter.powerW > 0
-      ? f.balance / TARIFF_RATE / (f.meter.powerW / 1000)
-      : null
+  // Credit expressed the way a prepaid meter sells it: kWh at the tariff.
+  const unitsLeft = unitsFor(f.balance)
+  // An open relay draws nothing, whatever the last reading said.
+  const livePower = f.relayOn ? f.meter.powerW : 0
+  const liveCurrent = f.relayOn ? f.meter.current : 0
+  const runtime = livePower > 0 ? unitsLeft / (livePower / 1000) : null
+  const rechargeUnits = Number(rechargeAmt) > 0 ? unitsFor(Number(rechargeAmt)) : 0
 
-  const others = flats
-    .map((flat, i) => ({ flat, i }))
-    .filter(({ i }) => i !== flatIndex)
+  const others = directory.filter((d) => d.i !== flatIndex)
 
   const submitRecharge = () => {
     if (actions.recharge(flatIndex, rechargeAmt)) setRechargeAmt('')
@@ -103,13 +121,16 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
               <p className="num mt-1 text-4xl font-extrabold tracking-tight sm:text-5xl">
                 {naira(f.balance)}
               </p>
+              <p className="num mt-1.5 text-sm font-semibold text-accent">
+                {kwh(unitsLeft)} of units remaining
+              </p>
               <Progress
                 value={balancePct}
                 className="mt-5 bg-white/15"
                 indicatorClassName={low ? 'bg-destructive' : 'bg-accent'}
               />
               <p className="mt-2 text-xs text-primary-foreground/60">
-                Tariff {naira(TARIFF_RATE)} / kWh · warns below {naira(LOW_BAL_WARN)}
+                Tariff {TARIFF_LABEL} · warns below {naira(LOW_BAL_WARN)}
               </p>
             </div>
           </Card>
@@ -120,16 +141,20 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
               icon={Gauge}
               tone="accent"
               label="Live power"
-              value={Math.round(f.meter.powerW)}
+              value={Math.round(livePower)}
               unit="W"
-              sub={`${f.meter.voltage} V · ${f.meter.current} A`}
+              sub={
+                f.relayOn
+                  ? `${f.meter.voltage} V · ${liveCurrent} A`
+                  : 'relay open — no load'
+              }
             />
             <StatCard
               icon={Activity}
-              label="Usage today"
-              value={f.dailyEnergy.toFixed(3)}
+              label="Energy consumed"
+              value={f.totalEnergy.toFixed(3)}
               unit="kWh"
-              sub="resets at midnight"
+              sub={`${f.dailyEnergy.toFixed(3)} kWh today · ${naira(costOf(f.totalEnergy), 0)} billed`}
             />
             <StatCard
               icon={Clock}
@@ -141,18 +166,44 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
             />
           </div>
 
-          {/* Balance trend */}
+          {/* Trends */}
           <Card>
-            <CardHeader className="pb-1">
-              <CardTitle className="text-base">Balance trend</CardTitle>
+            <CardHeader className="flex-row items-center justify-between space-y-0 pb-1">
+              <CardTitle className="text-base">Trend</CardTitle>
             </CardHeader>
             <CardContent>
-              <TrendChart
-                data={samples}
-                series={[{ key: `b${flatIndex}`, label: 'Balance', color: '#f59e0b' }]}
-                formatter={(v) => naira(v, 0)}
-                height={180}
-              />
+              <Tabs defaultValue="energy">
+                <TabsList className="mb-3 grid w-full grid-cols-3 sm:w-[320px]">
+                  <TabsTrigger value="energy">Energy</TabsTrigger>
+                  <TabsTrigger value="power">Load</TabsTrigger>
+                  <TabsTrigger value="credit">Credit</TabsTrigger>
+                </TabsList>
+                <TabsContent value="energy">
+                  <TrendChart
+                    data={samples}
+                    series={[{ key: 'energy', label: 'Consumed', color: '#10b981' }]}
+                    unit="kWh"
+                    formatter={(v) => Number(v).toFixed(3)}
+                    height={180}
+                  />
+                </TabsContent>
+                <TabsContent value="power">
+                  <TrendChart
+                    data={samples}
+                    series={[{ key: 'power', label: 'Live load', color: '#3b82f6' }]}
+                    unit="W"
+                    height={180}
+                  />
+                </TabsContent>
+                <TabsContent value="credit">
+                  <TrendChart
+                    data={samples}
+                    series={[{ key: 'balance', label: 'Balance', color: '#f59e0b' }]}
+                    formatter={(v) => naira(v, 0)}
+                    height={180}
+                  />
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
 
@@ -163,8 +214,7 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
             </CardHeader>
             <CardContent className="pt-0">
               <ActivityFeed
-                entries={flatHistory}
-                flats={flats}
+                entries={history}
                 emptyHint="Your recharges, transfers and alerts appear here"
               />
             </CardContent>
@@ -216,6 +266,31 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
                       </Button>
                     ))}
                   </div>
+
+                  {/* What the money buys, before and after */}
+                  <div
+                    className={cn(
+                      'rounded-lg border p-3 text-sm transition-colors',
+                      rechargeUnits > 0 ? 'border-accent/50 bg-accent/10' : 'bg-muted/40'
+                    )}
+                  >
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-muted-foreground">Units you get</span>
+                      <span className="num font-bold text-accent">
+                        +{kwh(rechargeUnits)}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-baseline justify-between border-t pt-1.5">
+                      <span className="text-muted-foreground">Units after top-up</span>
+                      <span className="num font-semibold">
+                        {kwh(unitsLeft + rechargeUnits)}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      Charged at {TARIFF_LABEL}
+                    </p>
+                  </div>
+
                   <Button variant="accent" className="w-full" onClick={submitRecharge}>
                     Recharge
                   </Button>
@@ -229,9 +304,9 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
                         <SelectValue placeholder="Select a flat" />
                       </SelectTrigger>
                       <SelectContent>
-                        {others.map(({ flat, i }) => (
+                        {others.map(({ i, name }) => (
                           <SelectItem key={i} value={String(i)}>
-                            {flat.name}
+                            {name}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -248,6 +323,11 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
                       value={transferAmt}
                       onChange={(e) => setTransferAmt(e.target.value)}
                     />
+                    {Number(transferAmt) > 0 && (
+                      <p className="num text-xs text-muted-foreground">
+                        Sends {kwh(unitsFor(Number(transferAmt)))} of units
+                      </p>
+                    )}
                   </div>
                   <Button className="w-full" onClick={submitTransfer}>
                     Send transfer
@@ -258,8 +338,9 @@ export default function Dashboard({ flats, flatIndex, history, samples, actions,
                   <div className="rounded-lg border bg-muted/40 p-4 text-sm">
                     <p className="font-medium">Emergency credit</p>
                     <p className="mt-1 text-muted-foreground">
-                      Borrow {naira(EMERGENCY_AMT)} once to keep the lights on. It is
-                      auto-repaid from your next recharge before any credit is added.
+                      Borrow {naira(EMERGENCY_AMT)} ({kwh(unitsFor(EMERGENCY_AMT))}) once
+                      to keep the lights on. It is auto-repaid from your next recharge
+                      before any credit is added.
                     </p>
                     {f.emergencyUsed && (
                       <p className="mt-2 font-medium text-foreground">

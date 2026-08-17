@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { ref, onValue, update } from 'firebase/database'
 import { db, firebaseEnabled } from '@/lib/firebase'
 import { flatsFromSnapshot, toRtdbWrite } from '@/lib/flatMapper'
+import { clearPins, loadPins, pinKey, savePin } from '@/lib/pinStore'
 import {
   INITIAL_FLATS,
   TARIFF_RATE,
@@ -10,14 +11,50 @@ import {
   EMERGENCY_AMT,
   MAX_PIN_ATTEMPTS,
   LOCKOUT_MS,
+  NOMINAL_VOLTAGE,
+  TARIFF_LABEL,
+  unitsFor,
+  kwh,
+  naira,
 } from '@/lib/constants'
 
 const clone = (flats) => flats.map((f) => ({ ...f, meter: { ...f.meter } }))
 
+// Start the simulation from the PINs tenants actually set, not the demo defaults.
+const withStoredPins = (flats) => {
+  const stored = loadPins()
+  return flats.map((f, i) => {
+    const pin = stored[pinKey(f, i)]
+    return pin ? { ...f, pin } : f
+  })
+}
+
+// One instantaneous meter reading for a flat, kept internally consistent:
+// P = V × I always holds, and an open relay reads no load at all.
+// Two out-of-phase sine terms give a smooth wander around the flat's base load
+// instead of the white noise a plain random() would produce.
+function readMeter(flat, index, seconds) {
+  const voltage = +(
+    NOMINAL_VOLTAGE * (1 + 0.015 * Math.sin(seconds / 7 + index))
+  ).toFixed(1)
+
+  if (!flat.relayOn) {
+    // Relay open: mains still present at the meter, but nothing flows.
+    return { voltage, current: 0, powerW: 0 }
+  }
+
+  const base = flat.meter.baseW
+  const wander =
+    0.06 * Math.sin(seconds / 5 + index * 2.1) +
+    0.03 * Math.sin(seconds / 1.7 + index)
+  const powerW = Math.max(0, +(base * (1 + wander)).toFixed(1))
+  return { voltage, current: +(powerW / voltage).toFixed(2), powerW }
+}
+
 // Central hook replicating the firmware's shared core logic (coreRecharge,
 // coreTransfer, coreBorrow, billingTick, authenticate) against dummy data.
 export function useEnergySystem() {
-  const [flats, setFlats] = useState(() => clone(INITIAL_FLATS))
+  const [flats, setFlats] = useState(() => withStoredPins(clone(INITIAL_FLATS)))
   const [history, setHistory] = useState([])
   const [samples, setSamples] = useState([]) // time-series for charts
   // Where the flat data is coming from: 'live' once Realtime Database has
@@ -38,7 +75,18 @@ export function useEnergySystem() {
 
   const pushHistory = useCallback((flat, type, amount = 0, note = '') => {
     setHistory((prev) =>
-      [{ id: idRef.current++, ts: Date.now(), flat, type, amount, note }, ...prev].slice(0, 60)
+      [
+        {
+          id: idRef.current++,
+          ts: Date.now(),
+          flat,
+          type,
+          amount,
+          units: unitsFor(amount), // energy equivalent of the credit moved
+          note,
+        },
+        ...prev,
+      ].slice(0, 60)
     )
   }, [])
 
@@ -101,28 +149,31 @@ export function useEnergySystem() {
     }
   }, [])
 
-  // ── Billing tick (runs every second) ──
+  // ── Meter + billing tick (runs every second) ──
   useEffect(() => {
     const id = setInterval(() => {
       // Live data from the hardware owns the meters and balances — don't
       // simulate on top of it. Only run the sim as the offline fallback.
       if (sourceRef.current === 'live') return
       const simMinutes = speedRef.current
-      if (simMinutes <= 0) return
-      const elapsedHours = simMinutes / 60
+      // Billing can be paused, but the meter keeps reading — pausing the demo
+      // clock must not look like the meter has died.
+      const elapsedHours = simMinutes > 0 ? simMinutes / 60 : 0
+      const seconds = Date.now() / 1000
 
       setFlats((prev) => {
         const next = clone(prev)
-        for (const f of next) {
-          // Small live jitter on the meter so the "live power" reads real.
-          const base = f.meter.powerW
-          const jittered = Math.max(0, base + (Math.round(base * 0.04) - Math.round(base * 0.08 * Math.abs(Math.sin(Date.now() / 900 + base)))))
-          f.meter.current = +(jittered / f.meter.voltage).toFixed(2)
+        next.forEach((f, i) => {
+          const reading = readMeter(f, i, seconds)
+          f.meter.voltage = reading.voltage
+          f.meter.current = reading.current
+          f.meter.powerW = reading.powerW
 
-          if (!f.relayOn) continue
+          if (!f.relayOn || elapsedHours === 0) return
 
-          const kWhThisTick = (jittered / 1000) * elapsedHours
+          const kWhThisTick = (reading.powerW / 1000) * elapsedHours
           f.dailyEnergy += kWhThisTick
+          f.totalEnergy += kWhThisTick
           f.balance -= kWhThisTick * TARIFF_RATE
 
           // Auto-repay emergency debt as balance recovers.
@@ -140,9 +191,14 @@ export function useEnergySystem() {
           // (Toast + history are handled by the relay-transition effect.)
           if (f.balance <= 0 && !f.emergencyUsed) {
             f.balance = 0
-            if (f.relayOn) f.relayOn = false
+            if (f.relayOn) {
+              f.relayOn = false
+              // Relay just opened — the meter must read zero immediately.
+              f.meter.powerW = 0
+              f.meter.current = 0
+            }
           }
-        }
+        })
         return next
       })
     }, 1000)
@@ -164,6 +220,7 @@ export function useEnergySystem() {
         sample.load += w
         sample[`p${i}`] = w
         sample[`b${i}`] = +f.balance.toFixed(2)
+        sample[`e${i}`] = +f.totalEnergy.toFixed(4) // energy consumed, kWh
       })
       setSamples((prev) => [...prev, sample].slice(-45))
     }, 1000)
@@ -176,7 +233,9 @@ export function useEnergySystem() {
       const low = f.balance > 0 && f.balance <= LOW_BAL_WARN
       if (low && !warnedRef.current[f.name]) {
         warnedRef.current[f.name] = true
-        toast.warning(`${f.name}: low balance (${f.balance.toFixed(2)} NGN)`)
+        toast.warning(
+          `${f.name}: low balance — ${naira(f.balance)} (${kwh(unitsFor(f.balance))} left)`
+        )
       }
       if (!low) warnedRef.current[f.name] = false
     }
@@ -245,17 +304,21 @@ export function useEnergySystem() {
   }, [flats])
 
   // ── coreRecharge ──
+  // A recharge buys energy units: the naira credited is worth amt / TARIFF_RATE
+  // kWh, and that is what the tenant is told they gained.
   const recharge = useCallback((i, amt) => {
     amt = Number(amt)
     if (!amt || amt <= 0) {
       toast.error('Invalid amount')
       return false
     }
+    let owedRepaid = 0
     commit((next) => {
       const f = next[i]
       f.balance += amt
       if (f.emergencyOwed > 0) {
         const repay = Math.min(amt, f.emergencyOwed)
+        owedRepaid = repay
         f.balance -= repay
         f.emergencyOwed -= repay
         if (f.emergencyOwed <= 0.01) {
@@ -266,7 +329,12 @@ export function useEnergySystem() {
       if (!f.relayOn && f.balance > 0) f.relayOn = true
       return [f.id]
     })
-    toast.success(`Recharged ${amt.toFixed(2)} NGN`)
+    const netUnits = unitsFor(amt - owedRepaid)
+    toast.success(`Recharged ${naira(amt)} — units added ${kwh(netUnits)}`, {
+      description: owedRepaid
+        ? `${naira(owedRepaid)} went to clearing emergency credit first`
+        : `at ${TARIFF_LABEL}`,
+    })
     pushHistory(i, 'recharge', amt)
     return true
   }, [commit, pushHistory])
@@ -288,7 +356,7 @@ export function useEnergySystem() {
       if (!next[to].relayOn && next[to].balance > 0) next[to].relayOn = true
       return [next[from].id, next[to].id]
     })
-    toast.success(`Transferred ${amt.toFixed(2)} NGN to ${flats[to].name}`)
+    toast.success(`Transferred ${naira(amt)} (${kwh(unitsFor(amt))}) to ${flats[to].name}`)
     pushHistory(from, 'transfer_out', amt, flats[to].name)
     pushHistory(to, 'transfer_in', amt, flats[from].name)
     return true
@@ -310,12 +378,16 @@ export function useEnergySystem() {
       if (!f.relayOn) f.relayOn = true
       return [f.id]
     })
-    toast.success(`Emergency credit of ${EMERGENCY_AMT.toFixed(2)} NGN granted`)
+    toast.success(
+      `Emergency credit of ${naira(EMERGENCY_AMT)} (${kwh(unitsFor(EMERGENCY_AMT))}) granted`
+    )
     pushHistory(i, 'borrow', EMERGENCY_AMT)
     return true
   }, [flats, commit, pushHistory])
 
   // ── Change PIN (verifies current PIN, mirrors the firmware's hashed store) ──
+  // The new PIN is persisted so it still works after a reload — a PIN that
+  // reverts to the demo default on refresh has not really been changed.
   const changePin = useCallback((i, current, next) => {
     const f = flats[i]
     if (current !== f.pin) return { ok: false, msg: 'Current PIN is incorrect' }
@@ -326,19 +398,27 @@ export function useEnergySystem() {
       n[i].pin = next
       return n
     })
-    toast.success(`${f.name}: PIN updated`)
+    const saved = savePin(pinKey(f, i), next)
+    toast.success(`${f.name}: PIN updated`, {
+      description: saved
+        ? 'Saved on this device — use it next time you sign in.'
+        : 'This browser blocks storage, so it will reset when you reload.',
+    })
     pushHistory(i, 'pin_change')
     return { ok: true, msg: 'PIN updated' }
   }, [flats, pushHistory])
 
   // ── Reset demo back to the initial state ──
+  // Also the way back in when a tenant forgets a PIN they set: nothing can read
+  // a chosen PIN back, so restoring the demo defaults is the recovery path.
   const reset = useCallback(() => {
+    clearPins()
     setFlats(clone(INITIAL_FLATS))
     setHistory([])
     setSamples([])
     warnedRef.current = {}
     prevRelays.current = INITIAL_FLATS.map((f) => f.relayOn)
-    toast.success('Demo data reset')
+    toast.success('Demo data reset', { description: 'Tenant PINs restored to defaults' })
   }, [])
 
   return {

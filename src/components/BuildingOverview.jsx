@@ -1,27 +1,51 @@
-import { Activity, Gauge, Power, Receipt, Zap } from 'lucide-react'
+import { Activity, Gauge, Lock, Power, Receipt, ShieldCheck, Zap } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import StatCard from '@/components/StatCard'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
-import { LOW_BAL_WARN, TARIFF_RATE, naira } from '@/lib/constants'
+import {
+  INITIAL_FLATS,
+  LOW_BAL_WARN,
+  TARIFF_LABEL,
+  costOf,
+  kwh,
+  naira,
+  unitsFor,
+} from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 const BARS = ['bg-accent', 'bg-primary', 'bg-emerald-500']
 
-export default function BuildingOverview({ flats, history = [], samples = [] }) {
+// Administrator-only view: it aggregates every flat, so App only renders it once
+// the admin PIN has been accepted.
+export default function BuildingOverview({ flats, history = [], samples = [], onLock }) {
   const totalPower = flats.reduce((s, f) => (f.relayOn ? s + f.meter.powerW : s), 0)
   const totalDaily = flats.reduce((s, f) => s + f.dailyEnergy, 0)
+  const totalConsumed = flats.reduce((s, f) => s + f.totalEnergy, 0)
   const online = flats.filter((f) => f.relayOn).length
 
   return (
     <div className="space-y-6">
+      {/* Admin session bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Badge variant="success">
+          <ShieldCheck className="mr-1 h-3 w-3" /> Administrator session
+        </Badge>
+        {onLock && (
+          <Button variant="outline" size="sm" onClick={onLock}>
+            <Lock className="h-4 w-4" /> Lock monitor
+          </Button>
+        )}
+      </div>
+
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={Gauge} tone="accent" label="Total load" value={Math.round(totalPower)} unit="W" sub="live across building" />
-        <StatCard icon={Activity} label="Energy today" value={totalDaily.toFixed(2)} unit="kWh" sub="all flats combined" />
-        <StatCard icon={Receipt} label="Billed today" value={naira(totalDaily * TARIFF_RATE, 0)} sub={`at ${naira(TARIFF_RATE, 0)}/kWh`} />
+        <StatCard icon={Activity} label="Energy consumed" value={totalConsumed.toFixed(2)} unit="kWh" sub={`${totalDaily.toFixed(2)} kWh today · all flats`} />
+        <StatCard icon={Receipt} label="Billed" value={naira(costOf(totalConsumed), 0)} sub={`at ${TARIFF_LABEL}`} />
         <StatCard icon={Power} tone={online === flats.length ? 'success' : 'danger'} label="Flats online" value={`${online}/${flats.length}`} sub="power connected" />
       </div>
 
@@ -93,6 +117,9 @@ export default function BuildingOverview({ flats, history = [], samples = [] }) 
                   <p className={cn('num text-3xl font-bold tracking-tight', low ? 'text-destructive' : 'text-foreground')}>
                     {naira(f.balance)}
                   </p>
+                  <p className="num mt-0.5 text-xs text-muted-foreground">
+                    {kwh(unitsFor(f.balance))} of units left
+                  </p>
                   <Progress
                     value={Math.min(100, (f.balance / 500) * 100)}
                     className="mt-2.5"
@@ -105,8 +132,11 @@ export default function BuildingOverview({ flats, history = [], samples = [] }) 
                     <p className="num font-semibold">{f.relayOn ? Math.round(f.meter.powerW) : 0} W</p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">Usage today</p>
-                    <p className="num font-semibold">{f.dailyEnergy.toFixed(3)} kWh</p>
+                    <p className="text-xs text-muted-foreground">Energy consumed</p>
+                    <p className="num font-semibold">{f.totalEnergy.toFixed(3)} kWh</p>
+                    <p className="num text-[11px] text-muted-foreground">
+                      {f.dailyEnergy.toFixed(3)} kWh today
+                    </p>
                   </div>
                 </div>
                 {f.emergencyUsed && (
@@ -132,6 +162,43 @@ export default function BuildingOverview({ flats, history = [], samples = [] }) 
             showFlat
             emptyHint="Transactions across all flats will show here"
           />
+        </CardContent>
+      </Card>
+
+      {/* Demo aid: these PINs used to be printed on the public login screen, which
+          let any tenant sign into any flat. Only the factory default is shown — a
+          PIN the tenant has since chosen is theirs, and not the landlord's to read. */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">Tenant PINs</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <p className="mb-3 text-xs text-muted-foreground">
+            Factory defaults for the demo. Once a tenant sets their own PIN it stops
+            being shown here — use “Reset demo data” to restore the defaults if one
+            is forgotten.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {flats.map((f, i) => {
+              const factory = INITIAL_FLATS[i]?.pin
+              const changed = Boolean(factory) && f.pin !== factory
+              return (
+                <span
+                  key={f.name}
+                  className="rounded-lg border bg-muted/40 px-3 py-1.5 text-xs"
+                >
+                  {f.name} ·{' '}
+                  {changed ? (
+                    <span className="inline-flex items-center gap-1 font-medium text-muted-foreground">
+                      <Lock className="h-3 w-3" /> set by tenant
+                    </span>
+                  ) : (
+                    <b className="num text-foreground">{factory}</b>
+                  )}
+                </span>
+              )
+            })}
+          </div>
         </CardContent>
       </Card>
     </div>

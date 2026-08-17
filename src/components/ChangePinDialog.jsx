@@ -56,7 +56,9 @@ export default function ChangePinDialog({ flatIndex, flatName, changePin }) {
         <DialogHeader>
           <DialogTitle>Change PIN</DialogTitle>
           <DialogDescription>
-            Update the 4-digit PIN for {flatName}.
+            Update the 4-digit PIN for {flatName}. It is remembered on this device
+            and nobody else — including the building administrator — can read it
+            back, so keep a note of it.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">

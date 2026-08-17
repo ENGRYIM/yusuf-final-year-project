@@ -8,6 +8,7 @@ import ThemeToggle from '@/components/ThemeToggle'
 import LoginScreen from '@/components/LoginScreen'
 import Dashboard from '@/components/Dashboard'
 import BuildingOverview from '@/components/BuildingOverview'
+import AdminGate from '@/components/AdminGate'
 
 function useClock() {
   const [now, setNow] = useState(() => new Date())
@@ -23,6 +24,7 @@ export default function App() {
   const { dark, toggle } = useTheme()
   const [view, setView] = useState('monitor') // 'monitor' | 'tenant'
   const [flatIndex, setFlatIndex] = useState(null)
+  const [isAdmin, setIsAdmin] = useState(false)
   const now = useClock()
 
   const actions = {
@@ -35,6 +37,33 @@ export default function App() {
   // Re-key the content on navigation so it re-plays the entrance animation.
   const contentKey = view === 'tenant' ? `tenant-${flatIndex}` : view
 
+  // ── Privacy boundary ──
+  // A signed-in tenant only ever receives their own flat. Everything the tenant
+  // views get is derived here: a name-only directory (needed to pick a transfer
+  // recipient), their own history, and their own chart series — no other flat's
+  // PIN, balance, load or transactions crosses into the tenant components.
+  const directory = sys.flats.map((f, i) => ({ i, name: f.name }))
+  const onlineCount = sys.flats.filter((f) => f.relayOn).length
+  const tenantFlat = flatIndex === null ? null : sys.flats[flatIndex]
+  const tenantHistory =
+    flatIndex === null ? [] : sys.history.filter((e) => e.flat === flatIndex)
+  const tenantSamples =
+    flatIndex === null
+      ? []
+      : sys.samples.map((s) => ({
+          t: s.t,
+          balance: s[`b${flatIndex}`],
+          power: s[`p${flatIndex}`],
+          energy: s[`e${flatIndex}`],
+        }))
+
+  // Leaving the portal ends the tenant's session, so the next person at the
+  // screen has to authenticate again instead of inheriting the open flat.
+  const navigate = (next) => {
+    if (next !== view) setFlatIndex(null)
+    setView(next)
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <a href="#main-content" className="skip-link">
@@ -43,11 +72,13 @@ export default function App() {
 
       <Sidebar
         view={view}
-        setView={setView}
+        setView={navigate}
         speed={sys.speed}
         setSpeed={sys.setSpeed}
-        flats={sys.flats}
+        flatCount={sys.flats.length}
+        onlineCount={onlineCount}
         reset={sys.reset}
+        isAdmin={isAdmin}
       />
 
       <div className="lg:pl-64">
@@ -56,11 +87,13 @@ export default function App() {
           <div className="flex items-center gap-2">
             <MobileNav
               view={view}
-              setView={setView}
+              setView={navigate}
               speed={sys.speed}
               setSpeed={sys.setSpeed}
-              flats={sys.flats}
+              flatCount={sys.flats.length}
+              onlineCount={onlineCount}
               reset={sys.reset}
+              isAdmin={isAdmin}
             />
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-accent-foreground">
@@ -104,10 +137,19 @@ export default function App() {
             className="duration-300 animate-in fade-in-50 slide-in-from-bottom-2 motion-reduce:animate-none"
           >
             {view === 'monitor' ? (
-              <BuildingOverview flats={sys.flats} history={sys.history} samples={sys.samples} />
+              isAdmin ? (
+                <BuildingOverview
+                  flats={sys.flats}
+                  history={sys.history}
+                  samples={sys.samples}
+                  onLock={() => setIsAdmin(false)}
+                />
+              ) : (
+                <AdminGate onUnlock={() => setIsAdmin(true)} />
+              )
             ) : flatIndex === null ? (
               <LoginScreen
-                flats={sys.flats}
+                directory={directory}
                 isLocked={sys.isLocked}
                 lockSecondsRemaining={sys.lockSecondsRemaining}
                 authenticate={sys.authenticate}
@@ -115,10 +157,11 @@ export default function App() {
               />
             ) : (
               <Dashboard
-                flats={sys.flats}
+                flat={tenantFlat}
                 flatIndex={flatIndex}
-                history={sys.history}
-                samples={sys.samples}
+                directory={directory}
+                history={tenantHistory}
+                samples={tenantSamples}
                 actions={actions}
                 onLogout={() => setFlatIndex(null)}
               />

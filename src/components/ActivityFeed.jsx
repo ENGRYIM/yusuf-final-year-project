@@ -8,7 +8,7 @@ import {
   PowerOff,
   Inbox,
 } from 'lucide-react'
-import { naira } from '@/lib/constants'
+import { kwh, naira, unitsFor } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 const META = {
@@ -28,7 +28,9 @@ const time = (ts) =>
     second: '2-digit',
   })
 
-export default function ActivityFeed({ entries, flats, showFlat = false, emptyHint }) {
+// `flats` is only needed for the building-wide feed (showFlat); the tenant feed
+// is passed its own entries and never sees another flat's list.
+export default function ActivityFeed({ entries, flats = [], showFlat = false, emptyHint }) {
   if (!entries.length) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-muted-foreground">
@@ -57,16 +59,23 @@ export default function ActivityFeed({ entries, flats, showFlat = false, emptyHi
               <p className="truncate text-sm font-medium">
                 {m.label}
                 {e.note ? ` ${e.note}` : ''}
-                {showFlat && (
+                {showFlat && flats[e.flat] && (
                   <span className="text-muted-foreground"> · {flats[e.flat].name}</span>
                 )}
               </p>
               <p className="num text-xs text-muted-foreground">{time(e.ts)}</p>
             </div>
             {e.amount > 0 && (
-              <span className={cn('num shrink-0 text-sm font-semibold', m.tone)}>
-                {m.sign}
-                {naira(e.amount)}
+              <span className="shrink-0 text-right">
+                <span className={cn('num block text-sm font-semibold', m.tone)}>
+                  {m.sign}
+                  {naira(e.amount)}
+                </span>
+                {/* The same movement in energy units, which is what the meter sells */}
+                <span className="num block text-[11px] text-muted-foreground">
+                  {m.sign}
+                  {kwh(e.units ?? unitsFor(e.amount))}
+                </span>
               </span>
             )}
           </li>

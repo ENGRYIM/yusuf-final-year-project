@@ -7,11 +7,14 @@ import { cn } from '@/lib/utils'
 
 const FEATURES = [
   { icon: ShieldCheck, title: 'PIN-secured', text: 'SHA-256 hashed, 3-try lockout' },
-  { icon: Wallet, title: 'Prepaid credit', text: 'Recharge, transfer & borrow' },
-  { icon: Zap, title: 'Live metering', text: 'Real-time usage & auto cut-off' },
+  { icon: Wallet, title: 'Prepaid units', text: 'Recharge, transfer & borrow' },
+  { icon: Zap, title: 'Private metering', text: 'Your usage is yours alone' },
 ]
 
-export default function LoginScreen({ flats, isLocked, lockSecondsRemaining, authenticate, onSuccess }) {
+// `directory` is a names-only list ({ i, name }). The login screen deliberately
+// never receives balances, meter readings or PINs — a tenant picking their flat
+// must not be able to read anything about the others.
+export default function LoginScreen({ directory, isLocked, lockSecondsRemaining, authenticate, onSuccess }) {
   const [selectedFlat, setSelectedFlat] = useState(null)
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
@@ -100,9 +103,9 @@ export default function LoginScreen({ flats, isLocked, lockSecondsRemaining, aut
                 Choose a flat to sign in to its portal.
               </p>
               <div className="mt-5 grid gap-3">
-                {flats.map((f, i) => (
+                {directory.map(({ i, name }) => (
                   <button
-                    key={f.name}
+                    key={name}
                     onClick={() => pickFlat(i)}
                     className="group flex items-center justify-between rounded-xl border bg-card p-4 text-left transition-all hover:border-accent hover:shadow-sm"
                   >
@@ -111,25 +114,18 @@ export default function LoginScreen({ flats, isLocked, lockSecondsRemaining, aut
                         {i + 1}
                       </div>
                       <div>
-                        <p className="font-semibold">{f.name}</p>
+                        <p className="font-semibold">{name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {f.relayOn ? 'Power connected' : 'Disconnected'}
+                          PIN required
                         </p>
                       </div>
                     </div>
-                    <span
-                      className={cn(
-                        'h-2.5 w-2.5 rounded-full',
-                        f.relayOn ? 'bg-emerald-500' : 'bg-destructive'
-                      )}
-                    />
+                    <Lock className="h-4 w-4 text-muted-foreground/60" />
                   </button>
                 ))}
               </div>
               <p className="mt-5 rounded-lg bg-muted/50 px-3 py-2 text-center text-xs text-muted-foreground">
-                Demo PINs — Flat 1 <b className="text-foreground">1234</b> · Flat 2{' '}
-                <b className="text-foreground">5678</b> · Flat 3{' '}
-                <b className="text-foreground">9012</b>
+                Each flat's credit, usage and history are private to that flat.
               </p>
             </div>
           ) : (
@@ -142,7 +138,9 @@ export default function LoginScreen({ flats, isLocked, lockSecondsRemaining, aut
               </button>
 
               <div className="mt-4">
-                <h3 className="text-lg font-bold">{flats[selectedFlat].name}</h3>
+                <h3 className="text-lg font-bold">
+                  {directory.find((d) => d.i === selectedFlat)?.name}
+                </h3>
                 <p className="text-sm text-muted-foreground">
                   Type your 4-digit PIN or tap below
                 </p>

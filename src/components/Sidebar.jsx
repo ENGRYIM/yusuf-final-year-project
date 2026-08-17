@@ -43,8 +43,20 @@ export function SpeedControl({ speed, setSpeed, className }) {
 }
 
 // Shared inner content for both the desktop sidebar and the mobile drawer.
-export function SidebarContent({ view, setView, speed, setSpeed, flats, reset, onNavigate }) {
-  const online = flats.filter((f) => f.relayOn).length
+// Building-wide figures and the demo controls are administrator-only — a tenant
+// at the panel should not learn how many other flats are connected, nor be able
+// to reset the building's data.
+export function SidebarContent({
+  view,
+  setView,
+  speed,
+  setSpeed,
+  flatCount = 0,
+  onlineCount = 0,
+  reset,
+  isAdmin = false,
+  onNavigate,
+}) {
   const go = (id) => {
     setView(id)
     onNavigate?.()
@@ -101,18 +113,22 @@ export function SidebarContent({ view, setView, speed, setSpeed, flats, reset, o
             </span>
           </div>
           <p className="mt-1.5 text-[11px] text-muted-foreground">
-            {online}/{flats.length} flats connected
+            {isAdmin ? `${onlineCount}/${flatCount} flats connected` : 'Connected'}
           </p>
         </div>
-        <SpeedControl speed={speed} setSpeed={setSpeed} />
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start text-muted-foreground"
-          onClick={reset}
-        >
-          <RotateCcw className="h-4 w-4" /> Reset demo data
-        </Button>
+        {isAdmin && (
+          <>
+            <SpeedControl speed={speed} setSpeed={setSpeed} />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start text-muted-foreground"
+              onClick={reset}
+            >
+              <RotateCcw className="h-4 w-4" /> Reset demo data
+            </Button>
+          </>
+        )}
       </div>
     </div>
   )

@@ -3,10 +3,13 @@
 // the app groups them under `meter`. PIN/lockout state has no RTDB counterpart
 // (it's device-side auth), so it's kept client-side and merged back in here.
 import { INITIAL_FLATS } from '@/lib/constants'
+import { loadPins } from '@/lib/pinStore'
 
 // Client-only auth defaults, indexed to line up with the RTDB flat order.
-const authDefaults = (i) => ({
-  pin: INITIAL_FLATS[i]?.pin ?? '0000',
+// A PIN the tenant set themselves wins over the demo default — otherwise going
+// live (or reloading) would quietly hand their flat back to the factory PIN.
+const authDefaults = (i, id) => ({
+  pin: loadPins()[id] ?? INITIAL_FLATS[i]?.pin ?? '0000',
   failedAttempts: 0,
   lockedUntil: 0,
 })
@@ -14,20 +17,32 @@ const authDefaults = (i) => ({
 // RTDB record → app flat. `prevAuth` carries forward client-side auth state so a
 // live update from the hardware doesn't wipe a flat's failed attempts / lockout.
 export function fromRtdb(id, r, index, prevAuth) {
-  const auth = prevAuth ?? authDefaults(index)
+  const auth = prevAuth ?? authDefaults(index, id)
+  const dailyEnergy = Number(r.dailyEnergy) || 0
+  // Hardware readings: an open relay must read no load regardless of what the
+  // last sample said, so the UI never shows power flowing to a cut-off flat.
+  const relayOn = Boolean(r.relayOn)
+  const powerW = relayOn ? Number(r.powerW) || 0 : 0
+  const voltage = Number(r.voltage) || 0
   return {
     id, // RTDB key, e.g. 'flat1' — needed to address writes
     name: r.name ?? `Flat ${index + 1}`,
     balance: Number(r.balance) || 0,
-    dailyEnergy: Number(r.dailyEnergy) || 0,
-    relayOn: Boolean(r.relayOn),
+    dailyEnergy,
+    // Older records only carry the daily figure; fall back to it so the
+    // lifetime consumption readout is never blank.
+    totalEnergy: Number(r.totalEnergy) || dailyEnergy,
+    relayOn,
     emergencyUsed: Boolean(r.emergencyUsed),
     emergencyOwed: Number(r.emergencyOwed) || 0,
     lastUpdated: r.lastUpdated ?? null,
     meter: {
-      voltage: Number(r.voltage) || 0,
-      current: Number(r.current) || 0,
-      powerW: Number(r.powerW) || 0,
+      voltage,
+      current: relayOn ? Number(r.current) || 0 : 0,
+      powerW,
+      // The flat's load profile, kept even while the relay is open so the
+      // offline simulation has something to fall back to.
+      baseW: Number(r.powerW) || 0,
     },
     pin: auth.pin,
     failedAttempts: auth.failedAttempts,
@@ -67,5 +82,6 @@ export function toRtdbWrite(f) {
     emergencyUsed: Boolean(f.emergencyUsed),
     emergencyOwed: +Number(f.emergencyOwed).toFixed(2),
     dailyEnergy: +Number(f.dailyEnergy).toFixed(4),
+    totalEnergy: +Number(f.totalEnergy).toFixed(4),
   }
 }
