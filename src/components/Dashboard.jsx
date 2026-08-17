@@ -33,7 +33,6 @@ import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
 import ChangePinDialog from '@/components/ChangePinDialog'
 import {
-  EMERGENCY_AMT,
   LOW_BAL_WARN,
   TARIFF_LABEL,
   costOf,
@@ -53,11 +52,13 @@ export default function Dashboard({
   history,
   samples,
   actions,
+  borrowLimit,
   onLogout,
 }) {
   const [rechargeAmt, setRechargeAmt] = useState('')
   const [transferTo, setTransferTo] = useState('')
   const [transferAmt, setTransferAmt] = useState('')
+  const [borrowAmt, setBorrowAmt] = useState('')
 
   const low = f.balance > 0 && f.balance <= LOW_BAL_WARN
   const balancePct = Math.min(100, (f.balance / 500) * 100)
@@ -77,6 +78,9 @@ export default function Dashboard({
   const submitTransfer = () => {
     if (transferTo === '') return
     if (actions.transfer(flatIndex, Number(transferTo), transferAmt)) setTransferAmt('')
+  }
+  const submitBorrow = () => {
+    if (actions.borrow(flatIndex, borrowAmt)) setBorrowAmt('')
   }
 
   return (
@@ -338,8 +342,8 @@ export default function Dashboard({
                   <div className="rounded-lg border bg-muted/40 p-4 text-sm">
                     <p className="font-medium">Emergency credit</p>
                     <p className="mt-1 text-muted-foreground">
-                      Borrow {naira(EMERGENCY_AMT)} ({kwh(unitsFor(EMERGENCY_AMT))}) once
-                      to keep the lights on. It is auto-repaid from your next recharge
+                      Borrow up to {naira(borrowLimit)} ({kwh(unitsFor(borrowLimit))}) to
+                      keep the lights on. It is auto-repaid from your next recharge
                       before any credit is added.
                     </p>
                     {f.emergencyUsed && (
@@ -348,13 +352,33 @@ export default function Dashboard({
                       </p>
                     )}
                   </div>
+                  {!f.emergencyUsed && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="borrowAmt">Amount (₦)</Label>
+                      <Input
+                        id="borrowAmt"
+                        type="number"
+                        min="0"
+                        max={borrowLimit}
+                        inputMode="numeric"
+                        placeholder={`Up to ${borrowLimit.toFixed(2)}`}
+                        value={borrowAmt}
+                        onChange={(e) => setBorrowAmt(e.target.value)}
+                      />
+                      {Number(borrowAmt) > 0 && (
+                        <p className="num text-xs text-muted-foreground">
+                          Adds {kwh(unitsFor(Number(borrowAmt)))} of units
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <Button
                     variant="accent"
                     className="w-full"
                     disabled={f.emergencyUsed}
-                    onClick={() => actions.borrow(flatIndex)}
+                    onClick={submitBorrow}
                   >
-                    Borrow {naira(EMERGENCY_AMT)}
+                    Borrow
                   </Button>
                 </TabsContent>
               </Tabs>

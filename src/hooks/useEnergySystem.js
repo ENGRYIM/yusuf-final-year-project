@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ref, onValue, update } from 'firebase/database'
+import { ref, onValue, update, set } from 'firebase/database'
 import { db, firebaseEnabled } from '@/lib/firebase'
 import { flatsFromSnapshot, toRtdbWrite } from '@/lib/flatMapper'
 import { clearPins, loadPins, pinKey, savePin } from '@/lib/pinStore'
@@ -8,7 +8,7 @@ import {
   INITIAL_FLATS,
   TARIFF_RATE,
   LOW_BAL_WARN,
-  EMERGENCY_AMT,
+  DEFAULT_BORROW_LIMIT,
   MAX_PIN_ATTEMPTS,
   LOCKOUT_MS,
   NOMINAL_VOLTAGE,
@@ -63,6 +63,9 @@ export function useEnergySystem() {
   // Demo billing speed: 1 real second is billed as this many simulated
   // minutes so balances visibly drain during a demo. 0 = paused.
   const [speed, setSpeed] = useState(60)
+  // Global borrow limit — lives at settings/borrowLimit in RTDB so it can be
+  // changed (e.g. from the Firebase console) without redeploying the app.
+  const [borrowLimit, setBorrowLimit] = useState(DEFAULT_BORROW_LIMIT)
   const speedRef = useRef(speed)
   const sourceRef = useRef(source)
   const warnedRef = useRef({})
@@ -115,6 +118,34 @@ export function useEnergySystem() {
         setSource('sim')
         sourceRef.current = 'sim'
         toast.error('Firebase read failed — using local simulation')
+      }
+    )
+    return () => unsub()
+  }, [])
+
+  // ── Global borrow limit subscription ──
+  // Reads settings/borrowLimit so the limit can be changed remotely (e.g. from
+  // the Firebase console) without a redeploy. Seeds it with the default the
+  // first time so the node exists and is easy to find/edit later.
+  useEffect(() => {
+    if (!firebaseEnabled || !db) return
+    const limitRef = ref(db, 'settings/borrowLimit')
+    const unsub = onValue(
+      limitRef,
+      (snap) => {
+        const val = snap.val()
+        if (typeof val === 'number' && val > 0) {
+          setBorrowLimit(val)
+        } else {
+          setBorrowLimit(DEFAULT_BORROW_LIMIT)
+          set(limitRef, DEFAULT_BORROW_LIMIT).catch((e) =>
+            console.error('[firebase] failed to seed borrow limit', e)
+          )
+        }
+      },
+      (err) => {
+        console.error('[firebase] borrow limit read failed', err)
+        setBorrowLimit(DEFAULT_BORROW_LIMIT)
       }
     )
     return () => unsub()
@@ -363,27 +394,37 @@ export function useEnergySystem() {
   }, [flats, commit, pushHistory])
 
   // ── coreBorrow ──
-  const borrow = useCallback((i) => {
+  // amt is tenant-chosen, capped at the live global borrowLimit synced from
+  // Firebase (settings/borrowLimit). Falls back to DEFAULT_BORROW_LIMIT when
+  // no amount is passed, so existing callers keep working.
+  const borrow = useCallback((i, amt = borrowLimit) => {
     if (flats[i].emergencyUsed) {
       toast.error(
         `Emergency credit already in use. Repay ${flats[i].emergencyOwed.toFixed(2)} NGN first.`
       )
       return false
     }
+    amt = Number(amt)
+    if (!amt || amt <= 0) {
+      toast.error('Enter a valid amount')
+      return false
+    }
+    if (amt > borrowLimit) {
+      toast.error(`You can borrow up to ${borrowLimit.toFixed(2)} NGN`)
+      return false
+    }
     commit((next) => {
       const f = next[i]
-      f.balance += EMERGENCY_AMT
-      f.emergencyOwed = EMERGENCY_AMT
+      f.balance += amt
+      f.emergencyOwed = amt
       f.emergencyUsed = true
       if (!f.relayOn) f.relayOn = true
       return [f.id]
     })
-    toast.success(
-      `Emergency credit of ${naira(EMERGENCY_AMT)} (${kwh(unitsFor(EMERGENCY_AMT))}) granted`
-    )
-    pushHistory(i, 'borrow', EMERGENCY_AMT)
+    toast.success(`Emergency credit of ${naira(amt)} (${kwh(unitsFor(amt))}) granted`)
+    pushHistory(i, 'borrow', amt)
     return true
-  }, [flats, commit, pushHistory])
+  }, [flats, borrowLimit, commit, pushHistory])
 
   // ── Change PIN (verifies current PIN, mirrors the firmware's hashed store) ──
   // The new PIN is persisted so it still works after a reload — a PIN that
@@ -428,6 +469,7 @@ export function useEnergySystem() {
     source,
     speed,
     setSpeed,
+    borrowLimit,
     isLocked,
     lockSecondsRemaining,
     authenticate,

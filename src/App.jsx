@@ -163,6 +163,7 @@ export default function App() {
                 history={tenantHistory}
                 samples={tenantSamples}
                 actions={actions}
+                borrowLimit={sys.borrowLimit}
                 onLogout={() => setFlatIndex(null)}
               />
             )}
