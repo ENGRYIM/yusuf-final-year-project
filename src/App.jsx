@@ -1,53 +1,52 @@
-import { useEffect, useState } from 'react'
-import { Zap } from 'lucide-react'
-import { STATUS, useEnergySystem } from '@/hooks/useEnergySystem'
-import { useTheme } from '@/hooks/useTheme'
-import Sidebar from '@/components/Sidebar'
-import MobileNav from '@/components/MobileNav'
-import ThemeToggle from '@/components/ThemeToggle'
-import LoginScreen from '@/components/LoginScreen'
-import Dashboard from '@/components/Dashboard'
-import BuildingOverview from '@/components/BuildingOverview'
-import AdminGate from '@/components/AdminGate'
-import ConnectionState from '@/components/ConnectionState'
+import { useEffect, useState } from "react";
+import { Zap } from "lucide-react";
+import { STATUS, useEnergySystem } from "@/hooks/useEnergySystem";
+import { useTheme } from "@/hooks/useTheme";
+import Sidebar from "@/components/Sidebar";
+import MobileNav from "@/components/MobileNav";
+import ThemeToggle from "@/components/ThemeToggle";
+import LoginScreen from "@/components/LoginScreen";
+import Dashboard from "@/components/Dashboard";
+import BuildingOverview from "@/components/BuildingOverview";
+import AdminGate from "@/components/AdminGate";
+import ConnectionState from "@/components/ConnectionState";
 
 function useClock() {
-  const [now, setNow] = useState(() => new Date())
+  const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000)
-    return () => clearInterval(id)
-  }, [])
-  return now
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
 }
 
 export default function App() {
-  const sys = useEnergySystem()
-  const { dark, toggle } = useTheme()
-  const [view, setView] = useState('monitor') // 'monitor' | 'tenant'
-  const [flatIndex, setFlatIndex] = useState(null)
-  const [isAdmin, setIsAdmin] = useState(false)
-  const now = useClock()
+  const sys = useEnergySystem();
+  const { dark, toggle } = useTheme();
+  const [view, setView] = useState("monitor"); // 'monitor' | 'tenant'
+  const [flatIndex, setFlatIndex] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const now = useClock();
 
   const actions = {
     recharge: sys.recharge,
     transfer: sys.transfer,
     borrow: sys.borrow,
     changePin: sys.changePin,
-  }
-  const pageTitle = view === 'monitor' ? 'Building Monitor' : 'Tenant Portal'
-  // Re-key the content on navigation so it re-plays the entrance animation.
-  const contentKey = view === 'tenant' ? `tenant-${flatIndex}` : view
+  };
+  const pageTitle = view === "monitor" ? "Building Monitor" : "Tenant Portal";
+  const contentKey = view === "tenant" ? `tenant-${flatIndex}` : view;
 
   // ── Privacy boundary ──
   // A signed-in tenant only ever receives their own flat. Everything the tenant
   // views get is derived here: a name-only directory (needed to pick a transfer
   // recipient), their own history, and their own chart series — no other flat's
   // PIN, balance, load or transactions crosses into the tenant components.
-  const directory = sys.flats.map((f, i) => ({ i, name: f.name }))
-  const onlineCount = sys.flats.filter((f) => f.relayOn).length
-  const tenantFlat = flatIndex === null ? null : sys.flats[flatIndex] ?? null
+  const directory = sys.flats.map((f, i) => ({ i, name: f.name }));
+  const onlineCount = sys.flats.filter((f) => f.relayOn).length;
+  const tenantFlat = flatIndex === null ? null : (sys.flats[flatIndex] ?? null);
   const tenantHistory =
-    flatIndex === null ? [] : sys.history.filter((e) => e.flat === flatIndex)
+    flatIndex === null ? [] : sys.history.filter((e) => e.flat === flatIndex);
   const tenantSamples =
     flatIndex === null
       ? []
@@ -56,18 +55,18 @@ export default function App() {
           balance: s[`b${flatIndex}`],
           power: s[`p${flatIndex}`],
           energy: s[`e${flatIndex}`],
-        }))
+        }));
 
   // Leaving the portal ends the tenant's session, so the next person at the
   // screen has to authenticate again instead of inheriting the open flat.
   const navigate = (next) => {
-    if (next !== view) setFlatIndex(null)
-    setView(next)
-  }
+    if (next !== view) setFlatIndex(null);
+    setView(next);
+  };
 
   // Without live flats there is nothing truthful to render, so both views hand
   // over to ConnectionState instead of showing empty or invented figures.
-  const hasData = sys.status === STATUS.LIVE && sys.flats.length > 0
+  const hasData = sys.status === STATUS.LIVE && sys.flats.length > 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -111,20 +110,22 @@ export default function App() {
           <div>
             <h1 className="text-lg font-bold tracking-tight">{pageTitle}</h1>
             <p className="text-xs text-muted-foreground">
-              {view === 'monitor'
-                ? 'Live consumption across all flats'
-                : 'Recharge, transfer and manage flat credit'}
+              {view === "monitor"
+                ? "Live consumption across all flats"
+                : "Recharge, transfer and manage flat credit"}
             </p>
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right">
-              <p className="num text-sm font-semibold">{now.toLocaleTimeString('en-GB')}</p>
+              <p className="num text-sm font-semibold">
+                {now.toLocaleTimeString("en-GB")}
+              </p>
               <p className="text-xs text-muted-foreground">
-                {now.toLocaleDateString('en-GB', {
-                  weekday: 'short',
-                  day: '2-digit',
-                  month: 'short',
-                  year: 'numeric',
+                {now.toLocaleDateString("en-GB", {
+                  weekday: "short",
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
                 })}
               </p>
             </div>
@@ -132,14 +133,18 @@ export default function App() {
           </div>
         </header>
 
-        <main id="main-content" tabIndex={-1} className="mx-auto max-w-6xl px-4 py-6 focus:outline-none sm:px-6 lg:px-8 lg:py-8">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="mx-auto max-w-6xl px-4 py-6 focus:outline-none sm:px-6 lg:px-8 lg:py-8"
+        >
           <div
             key={contentKey}
             className="duration-300 animate-in fade-in-50 slide-in-from-bottom-2 motion-reduce:animate-none"
           >
             {!hasData ? (
               <ConnectionState status={sys.status} errorMsg={sys.errorMsg} />
-            ) : view === 'monitor' ? (
+            ) : view === "monitor" ? (
               isAdmin ? (
                 <BuildingOverview
                   flats={sys.flats}
@@ -174,10 +179,11 @@ export default function App() {
           </div>
 
           <footer className="mt-10 border-t pt-5 text-center text-xs text-muted-foreground">
-            Yusuf Ibn Musa · 2021/1/81460EE · FUT Minna, EEE Dept. · web dashboard (dummy data)
+            Yusuf Ibn Musa · 2021/1/81460EE · FUT Minna, EEE Dept. · web
+            dashboard (dummy data)
           </footer>
         </main>
       </div>
     </div>
-  )
+  );
 }
