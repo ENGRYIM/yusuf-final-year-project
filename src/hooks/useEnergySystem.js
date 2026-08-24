@@ -263,42 +263,44 @@ export function useEnergySystem() {
       : { ok: false, msg: 'Incorrect PIN' }
   }, [flats])
 
-  // ── coreRecharge ──
-  // A recharge buys energy units: the naira credited is worth amt / TARIFF_RATE
-  // kWh, and that is what the tenant is told they gained.
+  // ── recharge ──
+  // IMPORTANT: this does NOT write "balance" directly anymore. The ESP32
+  // pushes its own local balance to Firebase every ~1s (see
+  // syncAllFlatsToFirebase() in the firmware); if we wrote balance straight
+  // from here, that periodic push would clobber it within ~1-3 seconds and
+  // the recharge would appear to "revert". Instead we drop the amount into
+  // flats/{id}/pendingTopup, which the firmware polls each sync cycle,
+  // applies via its own coreRecharge() (so relay-on / emergency-repay logic
+  // stays correct), clears, and then pushes the real, authoritative balance
+  // back down through the normal flats/ listener above. So the ESP32 stays
+  // the single writer of balance - the web app only ever requests a topup.
   const recharge = useCallback((i, amt) => {
     amt = Number(amt)
     if (!amt || amt <= 0) {
       toast.error('Invalid amount')
       return false
     }
-    let owedRepaid = 0
-    const ok = commit((next) => {
-      const f = next[i]
-      f.balance += amt
-      if (f.emergencyOwed > 0) {
-        const repay = Math.min(amt, f.emergencyOwed)
-        owedRepaid = repay
-        f.balance -= repay
-        f.emergencyOwed -= repay
-        if (f.emergencyOwed <= 0.01) {
-          f.emergencyOwed = 0
-          f.emergencyUsed = false
-        }
-      }
-      if (!f.relayOn && f.balance > 0) f.relayOn = true
-      return [f.id]
+    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
+      toast.error('Not connected to the meter', {
+        description: 'Credit cannot be changed until live data is available.',
+      })
+      return false
+    }
+    const f = flatsRef.current[i]
+    if (!f) {
+      toast.error('Unknown flat')
+      return false
+    }
+    set(ref(db, `flats/${f.id}/pendingTopup`), amt).catch((e) => {
+      console.error('[firebase] pendingTopup write failed', e)
+      toast.error('Failed to sync to Firebase')
     })
-    if (!ok) return false
-    const netUnits = unitsFor(amt - owedRepaid)
-    toast.success(`Recharged ${naira(amt)} — units added ${kwh(netUnits)}`, {
-      description: owedRepaid
-        ? `${naira(owedRepaid)} went to clearing emergency credit first`
-        : `at ${TARIFF_LABEL}`,
+    toast.success(`Recharge of ${naira(amt)} sent to meter`, {
+      description: `Applying ${kwh(unitsFor(amt))} — balance updates in a moment.`,
     })
     pushHistory(i, 'recharge', amt)
     return true
-  }, [commit, pushHistory])
+  }, [pushHistory])
 
   // ── coreTransfer ──
   const transfer = useCallback((from, to, amt) => {
