@@ -291,7 +291,8 @@ export function useEnergySystem() {
       toast.error('Unknown flat')
       return false
     }
-    set(ref(db, `flats/${f.id}/pendingTopup`), amt).catch((e) => {
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    set(ref(db, `flats/${f.id}/pendingTopup`), { requestId, amount: amt }).catch((e) => {
       console.error('[firebase] pendingTopup write failed', e)
       toast.error('Failed to sync to Firebase')
     })
@@ -302,7 +303,11 @@ export function useEnergySystem() {
     return true
   }, [pushHistory])
 
-  // ── coreTransfer ──
+  // ── transfer ──
+  // The ESP32 is the single writer of balance. The web app therefore queues a
+  // transfer request and lets the firmware run coreTransfer() against its
+  // authoritative local balances. This prevents the next Firebase sync from
+  // overwriting a browser-side balance change.
   const transfer = useCallback((from, to, amt) => {
     amt = Number(amt)
     if (from === to) {
@@ -317,23 +322,37 @@ export function useEnergySystem() {
       toast.error('Insufficient balance')
       return false
     }
-    const ok = commit((next) => {
-      next[from].balance -= amt
-      next[to].balance += amt
-      if (!next[to].relayOn && next[to].balance > 0) next[to].relayOn = true
-      return [next[from].id, next[to].id]
+    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
+      toast.error('Not connected to the meter', {
+        description: 'Credit cannot be changed until live data is available.',
+      })
+      return false
+    }
+
+    const fromId = flats[from].id
+    const toId = flats[to].id
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    set(ref(db, `flats/${fromId}/pendingTransfer`), {
+      requestId,
+      toFlatId: toId,
+      amount: amt,
+    }).catch((e) => {
+      console.error('[firebase] pendingTransfer write failed', e)
+      toast.error('Failed to sync transfer to Firebase')
     })
-    if (!ok) return false
-    toast.success(`Transferred ${naira(amt)} (${kwh(unitsFor(amt))}) to ${flats[to].name}`)
+
+    toast.success(`Transfer of ${naira(amt)} (${kwh(unitsFor(amt))}) sent to meter`, {
+      description: `${flats[from].name} → ${flats[to].name}; balances update in a moment.`,
+    })
     pushHistory(from, 'transfer_out', amt, flats[to].name)
     pushHistory(to, 'transfer_in', amt, flats[from].name)
     return true
-  }, [flats, commit, pushHistory])
+  }, [flats, pushHistory])
 
-  // ── coreBorrow ──
-  // amt is tenant-chosen, capped at the live global borrowLimit synced from
-  // Firebase (settings/borrowLimit). Falls back to the limit when no amount is
-  // passed, so existing callers keep working.
+  // ── borrow ──
+  // Like recharge and transfer, borrowing is a firmware-side transaction.
+  // The browser only queues the requested amount; the ESP32 applies it through
+  // coreBorrow() so balance/emergency state cannot be clobbered by its next sync.
   const borrow = useCallback((i, amt = borrowLimit) => {
     if (!flats[i]) return false
     if (flats[i].emergencyUsed) {
@@ -351,19 +370,26 @@ export function useEnergySystem() {
       toast.error(`You can borrow up to ${naira(borrowLimit)}`)
       return false
     }
-    const ok = commit((next) => {
-      const f = next[i]
-      f.balance += amt
-      f.emergencyOwed = amt
-      f.emergencyUsed = true
-      if (!f.relayOn) f.relayOn = true
-      return [f.id]
+    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
+      toast.error('Not connected to the meter', {
+        description: 'Credit cannot be changed until live data is available.',
+      })
+      return false
+    }
+
+    const flatId = flats[i].id
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    set(ref(db, `flats/${flatId}/pendingBorrow`), { requestId, amount: amt }).catch((e) => {
+      console.error('[firebase] pendingBorrow write failed', e)
+      toast.error('Failed to sync borrow to Firebase')
     })
-    if (!ok) return false
-    toast.success(`Emergency credit of ${naira(amt)} (${kwh(unitsFor(amt))}) granted`)
+
+    toast.success(`Emergency credit of ${naira(amt)} (${kwh(unitsFor(amt))}) sent to meter`, {
+      description: 'The meter will apply the credit and update the balance in a moment.',
+    })
     pushHistory(i, 'borrow', amt)
     return true
-  }, [flats, borrowLimit, commit, pushHistory])
+  }, [flats, borrowLimit, pushHistory])
 
   // ── Change PIN (verifies current PIN, mirrors the firmware's hashed store) ──
   // The new PIN is persisted so it still works after a reload — a PIN that
