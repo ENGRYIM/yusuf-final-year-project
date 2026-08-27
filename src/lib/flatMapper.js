@@ -30,7 +30,13 @@ export function monthlyFromRtdb(monthly) {
       const energyKWh = Number(r.energyKWh ?? r.energy ?? 0) || 0
       const billed = r.billed == null ? costOf(energyKWh) : Number(r.billed) || 0
       const recharged = r.recharged == null ? null : Number(r.recharged) || 0
-      return { key, label: monthLabel(key), energyKWh, billed, recharged }
+      // `recharged` is GROSS — what the tenant handed over. `repaid` is the part
+      // of it that went straight to emergency debt and never became spendable
+      // credit. Both come from the device; neither is derived here. Subtracting
+      // a balance rise from `recharged` would look like the same figure but
+      // silently absorb consumption between the two readings.
+      const repaid = r.repaid == null ? null : Number(r.repaid) || 0
+      return { key, label: monthLabel(key), energyKWh, billed, recharged, repaid }
     })
 }
 
@@ -54,6 +60,10 @@ export function fromRtdb(id, r, index, prevAuth) {
     emergencyUsed: Boolean(r.emergencyUsed),
     emergencyOwed: Number(r.emergencyOwed) || 0,
     lastUpdated: r.lastUpdated ?? null,
+    // Whether the readings came from a real PZEM or the firmware's simulated
+    // load. Absent means the device is too old to say, which is NOT the same as
+    // "simulated" — an unknown must not be presented as either measured or fake.
+    meterLive: r.meterLive == null ? null : Boolean(r.meterLive),
     monthly: monthlyFromRtdb(r.monthly),
     meter: {
       voltage: Number(r.voltage) || 0,
@@ -87,17 +97,4 @@ export function flatsFromSnapshot(flatsObj, prevFlats = []) {
       : null
     return fromRtdb(id, flatsObj[id] || {}, i, prevAuth)
   })
-}
-
-// App flat → the RTDB fields the hardware/app share (auth + meta are omitted;
-// meter readings are hardware-owned so we don't write them back).
-export function toRtdbWrite(f) {
-  return {
-    balance: +Number(f.balance).toFixed(2),
-    relayOn: Boolean(f.relayOn),
-    emergencyUsed: Boolean(f.emergencyUsed),
-    emergencyOwed: +Number(f.emergencyOwed).toFixed(2),
-    dailyEnergy: +Number(f.dailyEnergy).toFixed(4),
-    totalEnergy: +Number(f.totalEnergy).toFixed(4),
-  }
 }

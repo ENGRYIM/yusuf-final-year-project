@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ref, onValue, update, set } from 'firebase/database'
+import { ref, onValue, set } from 'firebase/database'
 import { db, firebaseEnabled } from '@/lib/firebase'
-import { flatsFromSnapshot, toRtdbWrite } from '@/lib/flatMapper'
+import { flatsFromSnapshot } from '@/lib/flatMapper'
 import { clearPins, pinKey, savePin } from '@/lib/pinStore'
 import {
   TARIFF_LABEL,
@@ -129,33 +129,9 @@ export function useEnergySystem() {
     return () => unsub()
   }, [])
 
-  // Apply a mutation to Realtime Database. `mutate(next)` mutates a cloned flats
-  // array in place and returns the ids of the flats it touched. With no local
-  // simulation to fall back on, a write with nothing connected is refused
-  // outright rather than silently changing numbers only this browser can see.
-  const commit = useCallback((mutate) => {
-    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
-      toast.error('Not connected to the meter', {
-        description: 'Credit cannot be changed until live data is available.',
-      })
-      return false
-    }
-    const next = clone(flatsRef.current)
-    const ids = mutate(next) || []
-    setFlats(next) // optimistic; the onValue listener reconciles
-    const updates = {}
-    for (const id of ids) {
-      const f = next.find((x) => x.id === id)
-      if (!f) continue
-      const w = toRtdbWrite(f)
-      for (const k in w) updates[`${id}/${k}`] = w[k]
-    }
-    update(ref(db, 'flats'), updates).catch((e) => {
-      console.error('[firebase] write failed', e)
-      toast.error('Failed to sync to Firebase')
-    })
-    return true
-  }, [])
+  // Meter fields (voltage/current/powerW/dailyEnergy/totalEnergy) are written
+  // by the firmware only. The dashboard issues commands via the pending* nodes
+  // below and never writes readings back, so it cannot clobber hardware state.
 
   // ── Sample the live meters once a second for the charts (last ~45 points) ──
   useEffect(() => {

@@ -3,7 +3,11 @@ export const TARIFF_RATE = 50.0 // NGN per kWh
 export const LOW_BAL_WARN = 20.0 // NGN
 // Fallback used only until the live limit is read from Firebase
 // (settings/borrowLimit) — or when Firebase is unconfigured/offline.
-export const DEFAULT_BORROW_LIMIT = 100000.00 // NGN
+// Must never exceed the firmware's compiled EMERGENCY_AMT default, because this
+// value is also SEEDED to settings/borrowLimit when that node is missing: a
+// higher number here would silently raise every tenant's borrow ceiling if the
+// node were ever deleted. Change this and EMERGENCY_AMT in the .ino together.
+export const DEFAULT_BORROW_LIMIT = 500.00 // NGN — mirrors EMERGENCY_AMT 500.0f
 export const PIN_LENGTH = 4
 export const MAX_PIN_ATTEMPTS = 3
 export const LOCKOUT_MS = 30000 // 30 seconds

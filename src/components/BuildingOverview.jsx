@@ -16,6 +16,10 @@ import StatCard from '@/components/StatCard'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
 import MonthlyHistory from '@/components/MonthlyHistory'
+import MeterStatus from '@/components/MeterStatus'
+import SimulatedBadge from '@/components/SimulatedBadge'
+import useNow from '@/hooks/useNow'
+import { meterFreshness, readingsAreCurrent } from '@/lib/freshness'
 import {
   DEFAULT_FLAT_PIN,
   LOW_BAL_WARN,
@@ -38,6 +42,14 @@ export default function BuildingOverview({
   onLock,
   onResetPins,
 }) {
+  const now = useNow()
+  // Per-flat, not building-wide: lastUpdated is written per flat, so one meter
+  // can go quiet while the rest keep reporting.
+  const freshnessById = Object.fromEntries(
+    flats.map((f) => [f.id || f.name, meterFreshness(f.lastUpdated, now)])
+  )
+  const offline = flats.filter((f) => !readingsAreCurrent(freshnessById[f.id || f.name]))
+
   const totalPower = flats.reduce((s, f) => (f.relayOn ? s + f.meter.powerW : s), 0)
   const totalDaily = flats.reduce((s, f) => s + f.dailyEnergy, 0)
   const totalConsumed = flats.reduce((s, f) => s + f.totalEnergy, 0)
@@ -56,6 +68,18 @@ export default function BuildingOverview({
           </Button>
         )}
       </div>
+
+      {/* Building-wide meter health. The aggregates below sum whatever each flat
+          last published, so a silent meter quietly biases every total. */}
+      {offline.length > 0 && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <span className="font-semibold">
+            {offline.length} of {flats.length} meters not reporting
+          </span>{' '}
+          — {offline.map((f) => f.name).join(', ')}. Totals and per-flat figures
+          for these are last-known values, so building totals are understated.
+        </div>
+      )}
 
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -122,10 +146,14 @@ export default function BuildingOverview({
                   <Zap className="h-4 w-4 text-accent" />
                   {f.name}
                 </span>
-                <Badge variant={f.relayOn ? 'success' : 'destructive'}>
-                  <Power className="mr-1 h-3 w-3" />
-                  {f.relayOn ? 'ON' : 'OFF'}
-                </Badge>
+                <span className="flex items-center gap-1.5">
+                  <SimulatedBadge live={f.meterLive} />
+                  <MeterStatus freshness={freshnessById[f.id || f.name]} />
+                  <Badge variant={f.relayOn ? 'success' : 'destructive'}>
+                    <Power className="mr-1 h-3 w-3" />
+                    {f.relayOn ? 'ON' : 'OFF'}
+                  </Badge>
+                </span>
               </div>
               <CardContent className="space-y-4 p-5">
                 <div>

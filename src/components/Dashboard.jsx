@@ -29,6 +29,10 @@ import {
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import StatCard from '@/components/StatCard'
+import MeterStatus from '@/components/MeterStatus'
+import SimulatedBadge from '@/components/SimulatedBadge'
+import useNow from '@/hooks/useNow'
+import { meterFreshness, readingsAreCurrent, canTransact } from '@/lib/freshness'
 import ActivityFeed from '@/components/ActivityFeed'
 import TrendChart from '@/components/TrendChart'
 import ChangePinDialog from '@/components/ChangePinDialog'
@@ -60,6 +64,13 @@ export default function Dashboard({
   const [transferTo, setTransferTo] = useState('')
   const [transferAmt, setTransferAmt] = useState('')
   const [borrowAmt, setBorrowAmt] = useState('')
+
+  // Freshness is judged against a ticking clock, not the last snapshot: a meter
+  // that dies sends nothing, so there is no re-render to react to.
+  const now = useNow()
+  const freshness = meterFreshness(f.lastUpdated, now)
+  const current = readingsAreCurrent(freshness)
+  const canSend = canTransact(freshness)
 
   const low = f.balance > 0 && f.balance <= LOW_BAL_WARN
   const balancePct = Math.min(100, (f.balance / 500) * 100)
@@ -101,6 +112,8 @@ export default function Dashboard({
               </Badge>
               {f.emergencyUsed && <Badge variant="warning">Owes {naira(f.emergencyOwed)}</Badge>}
               {low && <Badge variant="destructive">Low balance</Badge>}
+              <MeterStatus freshness={freshness} showAge />
+              <SimulatedBadge live={f.meterLive} />
             </div>
           </div>
         </div>
@@ -137,6 +150,12 @@ export default function Dashboard({
               <p className="mt-2 text-xs text-primary-foreground/60">
                 Tariff {TARIFF_LABEL} · warns below {naira(LOW_BAL_WARN)}
               </p>
+              {!current && (
+                <p className="mt-2 text-xs font-semibold text-accent">
+                  Last known balance — the meter has stopped reporting, and
+                  credit keeps being used while it is offline.
+                </p>
+              )}
             </div>
           </Card>
 
@@ -144,14 +163,16 @@ export default function Dashboard({
           <div className="grid gap-4 sm:grid-cols-3">
             <StatCard
               icon={Gauge}
-              tone="accent"
-              label="Live power"
+              tone={current ? 'accent' : 'default'}
+              label={current ? 'Live power' : 'Last known power'}
               value={Math.round(livePower)}
               unit="W"
               sub={
-                f.relayOn
-                  ? `${f.meter.voltage} V · ${liveCurrent} A`
-                  : 'relay open — no load'
+                !current
+                  ? freshness.detail
+                  : f.relayOn
+                    ? `${f.meter.voltage} V · ${liveCurrent} A${f.meterLive === false ? ' · simulated' : ''}`
+                    : 'relay open — no load'
               }
             />
             <StatCard
@@ -165,9 +186,9 @@ export default function Dashboard({
               icon={Clock}
               tone={low ? 'danger' : 'default'}
               label="Est. runtime"
-              value={runtime !== null ? runtime.toFixed(1) : '—'}
-              unit={runtime !== null ? 'h' : ''}
-              sub="at current load"
+              value={current && runtime !== null ? runtime.toFixed(1) : '—'}
+              unit={current && runtime !== null ? 'h' : ''}
+              sub={current ? 'at current load' : 'needs a live load reading'}
             />
           </div>
 
@@ -306,7 +327,18 @@ export default function Dashboard({
                     </p>
                   </div>
 
-                  <Button variant="accent" className="w-full" onClick={submitRecharge}>
+                  {!canSend && (
+                    <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+                      The meter is offline, so it cannot receive this request.
+                      Nothing is lost — try again once it reconnects.
+                    </p>
+                  )}
+                  <Button
+                    variant="accent"
+                    className="w-full"
+                    disabled={!canSend}
+                    onClick={submitRecharge}
+                  >
                     Recharge
                   </Button>
                 </TabsContent>
@@ -344,7 +376,17 @@ export default function Dashboard({
                       </p>
                     )}
                   </div>
-                  <Button className="w-full" onClick={submitTransfer}>
+                  {!canSend && (
+                    <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+                      The meter is offline, so it cannot receive this request.
+                      Nothing is lost — try again once it reconnects.
+                    </p>
+                  )}
+                  <Button
+                    className="w-full"
+                    disabled={!canSend}
+                    onClick={submitTransfer}
+                  >
                     Send transfer
                   </Button>
                 </TabsContent>
@@ -383,10 +425,16 @@ export default function Dashboard({
                       )}
                     </div>
                   )}
+                  {!canSend && (
+                    <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+                      The meter is offline, so it cannot receive this request.
+                      Nothing is lost — try again once it reconnects.
+                    </p>
+                  )}
                   <Button
                     variant="accent"
                     className="w-full"
-                    disabled={f.emergencyUsed}
+                    disabled={f.emergencyUsed || !canSend}
                     onClick={submitBorrow}
                   >
                     Borrow

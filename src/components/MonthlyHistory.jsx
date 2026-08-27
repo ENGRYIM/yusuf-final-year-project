@@ -22,6 +22,13 @@ export default function MonthlyHistory({ rows = [], compact = false }) {
   const totalEnergy = rows.reduce((s, r) => s + r.energyKWh, 0)
   const totalBilled = rows.reduce((s, r) => s + r.billed, 0)
   const anyRecharged = rows.some((r) => r.recharged != null)
+  // Only worth a column once some debt has actually been repaid — otherwise it
+  // is a column of zeros. Note nothing here derives "credit received" from
+  // recharged minus repaid: months predating the firmware's `repaid` counter
+  // report 0 while their `recharged` may still include repayment, so that
+  // subtraction would be wrong for exactly the rows a landlord cares about.
+  const anyRepaid = rows.some((r) => r.repaid > 0)
+  const totalRepaid = rows.reduce((s, r) => s + (r.repaid || 0), 0)
 
   return (
     <div className="overflow-x-auto">
@@ -32,7 +39,10 @@ export default function MonthlyHistory({ rows = [], compact = false }) {
             <th className="py-2 pr-3 text-right font-semibold">Consumed</th>
             <th className="py-2 pr-3 text-right font-semibold">Billed</th>
             {anyRecharged && (
-              <th className="py-2 text-right font-semibold">Recharged</th>
+              <th className="py-2 pr-3 text-right font-semibold">Recharged</th>
+            )}
+            {anyRepaid && (
+              <th className="py-2 text-right font-semibold">Repaid</th>
             )}
           </tr>
         </thead>
@@ -52,8 +62,16 @@ export default function MonthlyHistory({ rows = [], compact = false }) {
               </td>
               <td className="num py-2.5 pr-3 text-right">{naira(r.billed, 0)}</td>
               {anyRecharged && (
-                <td className="num py-2.5 text-right text-muted-foreground">
+                <td className="num py-2.5 pr-3 text-right text-muted-foreground">
                   {r.recharged == null ? '—' : naira(r.recharged, 0)}
+                </td>
+              )}
+              {anyRepaid && (
+                <td
+                  className="num py-2.5 text-right text-muted-foreground"
+                  title="Part of the amount recharged that repaid emergency credit instead of becoming spendable balance."
+                >
+                  {r.repaid == null ? '—' : r.repaid > 0 ? naira(r.repaid, 0) : '—'}
                 </td>
               )}
             </tr>
@@ -71,7 +89,12 @@ export default function MonthlyHistory({ rows = [], compact = false }) {
               <td className="num py-2.5 pr-3 text-right font-bold">
                 {naira(totalBilled, 0)}
               </td>
-              {anyRecharged && <td />}
+              {anyRecharged && <td className="num py-2.5 pr-3 text-right font-bold" />}
+              {anyRepaid && (
+                <td className="num py-2.5 text-right font-bold">
+                  {naira(totalRepaid, 0)}
+                </td>
+              )}
             </tr>
           </tfoot>
         )}
