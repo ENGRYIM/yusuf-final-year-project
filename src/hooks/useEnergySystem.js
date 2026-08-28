@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ref, onValue, set } from 'firebase/database'
+import { ref, onValue, set, update } from 'firebase/database'
 import { db, firebaseEnabled } from '@/lib/firebase'
-import { flatsFromSnapshot } from '@/lib/flatMapper'
+import { flatsFromSnapshot, toRtdbWrite } from '@/lib/flatMapper'
 import { clearPins, pinKey, savePin } from '@/lib/pinStore'
 import {
   TARIFF_LABEL,
@@ -129,9 +129,46 @@ export function useEnergySystem() {
     return () => unsub()
   }, [])
 
-  // Meter fields (voltage/current/powerW/dailyEnergy/totalEnergy) are written
-  // by the firmware only. The dashboard issues commands via the pending* nodes
-  // below and never writes readings back, so it cannot clobber hardware state.
+  // Apply a credit mutation straight to Realtime Database. `mutate(next)`
+  // mutates a cloned flats array in place and returns the ids it touched; only
+  // the fields in toRtdbWrite() are sent, so meter readings are never echoed
+  // back over the firmware's own.
+  //
+  // CAVEAT: the ESP32 also pushes its local balance every sync cycle. It is the
+  // other writer of these same fields, so a top-up applied here is only durable
+  // once the device reads the new balance back down. If the firmware pushes a
+  // stale balance afterwards, the top-up will appear to revert — that is the
+  // race the pendingTopup design existed to avoid.
+  //
+  // The connection check below is about the Firebase subscription, not meter
+  // liveness: with no snapshot there is no balance to add to, so there is
+  // nothing to mutate.
+  const commit = useCallback((mutate) => {
+    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
+      toast.error('Not connected to the meter', {
+        description: 'Credit cannot be changed until live data is available.',
+      })
+      return false
+    }
+    const next = clone(flatsRef.current)
+    const ids = mutate(next) || []
+    setFlats(next) // optimistic; the onValue listener reconciles
+    const updates = {}
+    for (const id of ids) {
+      const f = next.find((x) => x.id === id)
+      if (!f) continue
+      const w = toRtdbWrite(f)
+      for (const k in w) updates[`${id}/${k}`] = w[k]
+    }
+    update(ref(db, 'flats'), updates).catch((e) => {
+      console.error('[firebase] write failed', e)
+      toast.error('Failed to sync to Firebase')
+    })
+    return true
+  }, [])
+
+  // Meter readings (voltage/current/powerW/dailyEnergy/totalEnergy) are written
+  // by the firmware only — commit() never sends them back.
 
   // ── Sample the live meters once a second for the charts (last ~45 points) ──
   useEffect(() => {
@@ -240,50 +277,45 @@ export function useEnergySystem() {
   }, [flats])
 
   // ── recharge ──
-  // IMPORTANT: this does NOT write "balance" directly anymore. The ESP32
-  // pushes its own local balance to Firebase every ~1s (see
-  // syncAllFlatsToFirebase() in the firmware); if we wrote balance straight
-  // from here, that periodic push would clobber it within ~1-3 seconds and
-  // the recharge would appear to "revert". Instead we drop the amount into
-  // flats/{id}/pendingTopup, which the firmware polls each sync cycle,
-  // applies via its own coreRecharge() (so relay-on / emergency-repay logic
-  // stays correct), clears, and then pushes the real, authoritative balance
-  // back down through the normal flats/ listener above. So the ESP32 stays
-  // the single writer of balance - the web app only ever requests a topup.
+  // A recharge buys energy units: the naira credited is worth amt / TARIFF_RATE
+  // kWh, and that is what the tenant is told they gained. Emergency debt is
+  // cleared out of the top-up first, mirroring the firmware's coreRecharge().
   const recharge = useCallback((i, amt) => {
     amt = Number(amt)
     if (!amt || amt <= 0) {
       toast.error('Invalid amount')
       return false
     }
-    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
-      toast.error('Not connected to the meter', {
-        description: 'Credit cannot be changed until live data is available.',
-      })
-      return false
-    }
-    const f = flatsRef.current[i]
-    if (!f) {
-      toast.error('Unknown flat')
-      return false
-    }
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    set(ref(db, `flats/${f.id}/pendingTopup`), { requestId, amount: amt }).catch((e) => {
-      console.error('[firebase] pendingTopup write failed', e)
-      toast.error('Failed to sync to Firebase')
+    let owedRepaid = 0
+    const ok = commit((next) => {
+      const f = next[i]
+      if (!f) return []
+      f.balance += amt
+      if (f.emergencyOwed > 0) {
+        const repay = Math.min(amt, f.emergencyOwed)
+        owedRepaid = repay
+        f.balance -= repay
+        f.emergencyOwed -= repay
+        if (f.emergencyOwed <= 0.01) {
+          f.emergencyOwed = 0
+          f.emergencyUsed = false
+        }
+      }
+      if (!f.relayOn && f.balance > 0) f.relayOn = true
+      return [f.id]
     })
-    toast.success(`Recharge of ${naira(amt)} sent to meter`, {
-      description: `Applying ${kwh(unitsFor(amt))} — balance updates in a moment.`,
+    if (!ok) return false
+    const netUnits = unitsFor(amt - owedRepaid)
+    toast.success(`Recharged ${naira(amt)} — units added ${kwh(netUnits)}`, {
+      description: owedRepaid
+        ? `${naira(owedRepaid)} went to clearing emergency credit first`
+        : `at ${TARIFF_LABEL}`,
     })
     pushHistory(i, 'recharge', amt)
     return true
-  }, [pushHistory])
+  }, [commit, pushHistory])
 
   // ── transfer ──
-  // The ESP32 is the single writer of balance. The web app therefore queues a
-  // transfer request and lets the firmware run coreTransfer() against its
-  // authoritative local balances. This prevents the next Firebase sync from
-  // overwriting a browser-side balance change.
   const transfer = useCallback((from, to, amt) => {
     amt = Number(amt)
     if (from === to) {
@@ -298,37 +330,23 @@ export function useEnergySystem() {
       toast.error('Insufficient balance')
       return false
     }
-    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
-      toast.error('Not connected to the meter', {
-        description: 'Credit cannot be changed until live data is available.',
-      })
-      return false
-    }
-
-    const fromId = flats[from].id
-    const toId = flats[to].id
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    set(ref(db, `flats/${fromId}/pendingTransfer`), {
-      requestId,
-      toFlatId: toId,
-      amount: amt,
-    }).catch((e) => {
-      console.error('[firebase] pendingTransfer write failed', e)
-      toast.error('Failed to sync transfer to Firebase')
+    const ok = commit((next) => {
+      next[from].balance -= amt
+      next[to].balance += amt
+      if (!next[to].relayOn && next[to].balance > 0) next[to].relayOn = true
+      return [next[from].id, next[to].id]
     })
-
-    toast.success(`Transfer of ${naira(amt)} (${kwh(unitsFor(amt))}) sent to meter`, {
-      description: `${flats[from].name} → ${flats[to].name}; balances update in a moment.`,
-    })
+    if (!ok) return false
+    toast.success(`Transferred ${naira(amt)} (${kwh(unitsFor(amt))}) to ${flats[to].name}`)
     pushHistory(from, 'transfer_out', amt, flats[to].name)
     pushHistory(to, 'transfer_in', amt, flats[from].name)
     return true
-  }, [flats, pushHistory])
+  }, [flats, commit, pushHistory])
 
   // ── borrow ──
-  // Like recharge and transfer, borrowing is a firmware-side transaction.
-  // The browser only queues the requested amount; the ESP32 applies it through
-  // coreBorrow() so balance/emergency state cannot be clobbered by its next sync.
+  // amt is tenant-chosen, capped at the live global borrowLimit synced from
+  // Firebase (settings/borrowLimit). Falls back to the limit when no amount is
+  // passed, so existing callers keep working.
   const borrow = useCallback((i, amt = borrowLimit) => {
     if (!flats[i]) return false
     if (flats[i].emergencyUsed) {
@@ -346,26 +364,19 @@ export function useEnergySystem() {
       toast.error(`You can borrow up to ${naira(borrowLimit)}`)
       return false
     }
-    if (statusRef.current !== STATUS.LIVE || !firebaseEnabled || !db) {
-      toast.error('Not connected to the meter', {
-        description: 'Credit cannot be changed until live data is available.',
-      })
-      return false
-    }
-
-    const flatId = flats[i].id
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    set(ref(db, `flats/${flatId}/pendingBorrow`), { requestId, amount: amt }).catch((e) => {
-      console.error('[firebase] pendingBorrow write failed', e)
-      toast.error('Failed to sync borrow to Firebase')
+    const ok = commit((next) => {
+      const f = next[i]
+      f.balance += amt
+      f.emergencyOwed = amt
+      f.emergencyUsed = true
+      if (!f.relayOn) f.relayOn = true
+      return [f.id]
     })
-
-    toast.success(`Emergency credit of ${naira(amt)} (${kwh(unitsFor(amt))}) sent to meter`, {
-      description: 'The meter will apply the credit and update the balance in a moment.',
-    })
+    if (!ok) return false
+    toast.success(`Emergency credit of ${naira(amt)} (${kwh(unitsFor(amt))}) granted`)
     pushHistory(i, 'borrow', amt)
     return true
-  }, [flats, borrowLimit, pushHistory])
+  }, [flats, borrowLimit, commit, pushHistory])
 
   // ── Change PIN (verifies current PIN, mirrors the firmware's hashed store) ──
   // The new PIN is persisted so it still works after a reload — a PIN that

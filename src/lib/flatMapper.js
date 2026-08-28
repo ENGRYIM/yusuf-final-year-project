@@ -98,3 +98,18 @@ export function flatsFromSnapshot(flatsObj, prevFlats = []) {
     return fromRtdb(id, flatsObj[id] || {}, i, prevAuth)
   })
 }
+
+// App flat → the RTDB fields the dashboard is allowed to write.
+//
+// Deliberately only the credit/relay fields. voltage, current, powerW,
+// dailyEnergy, totalEnergy and lastUpdated are measurements owned by the
+// firmware; echoing them back from the browser would overwrite a real reading
+// with whatever this tab last happened to receive.
+export function toRtdbWrite(f) {
+  return {
+    balance: +Number(f.balance).toFixed(2),
+    relayOn: Boolean(f.relayOn),
+    emergencyUsed: Boolean(f.emergencyUsed),
+    emergencyOwed: +Number(f.emergencyOwed).toFixed(2),
+  }
+}
