@@ -122,14 +122,3 @@ export function meterFreshness(lastUpdated, now = Date.now()) {
     live: true,
   }
 }
-
-// Whether the displayed electrical figures should be presented as current.
-// When false the UI must mark them as last-known: a meter that lost power still
-// has 550 W sitting in the database, and showing that as live power flowing to
-// the flat is the exact failure this module exists to prevent.
-export const readingsAreCurrent = (f) => f.state === FRESHNESS.FRESH || f.state === FRESHNESS.DELAYED
-
-// Whether credit commands should be accepted. The dashboard writes pendingTopup
-// and the firmware consumes it; with the meter offline that node is never read,
-// so the tenant would sit on 'Applying…' indefinitely with no explanation.
-export const canTransact = (f) => f.state !== FRESHNESS.STALE && f.state !== FRESHNESS.UNKNOWN

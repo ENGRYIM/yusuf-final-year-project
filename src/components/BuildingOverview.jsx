@@ -19,7 +19,7 @@ import MonthlyHistory from '@/components/MonthlyHistory'
 import MeterStatus from '@/components/MeterStatus'
 import SimulatedBadge from '@/components/SimulatedBadge'
 import useNow from '@/hooks/useNow'
-import { meterFreshness, readingsAreCurrent } from '@/lib/freshness'
+import { meterFreshness } from '@/lib/freshness'
 import {
   DEFAULT_FLAT_PIN,
   LOW_BAL_WARN,
@@ -48,7 +48,6 @@ export default function BuildingOverview({
   const freshnessById = Object.fromEntries(
     flats.map((f) => [f.id || f.name, meterFreshness(f.lastUpdated, now)])
   )
-  const offline = flats.filter((f) => !readingsAreCurrent(freshnessById[f.id || f.name]))
 
   const totalPower = flats.reduce((s, f) => (f.relayOn ? s + f.meter.powerW : s), 0)
   const totalDaily = flats.reduce((s, f) => s + f.dailyEnergy, 0)
@@ -68,18 +67,6 @@ export default function BuildingOverview({
           </Button>
         )}
       </div>
-
-      {/* Building-wide meter health. The aggregates below sum whatever each flat
-          last published, so a silent meter quietly biases every total. */}
-      {offline.length > 0 && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <span className="font-semibold">
-            {offline.length} of {flats.length} meters not reporting
-          </span>{' '}
-          — {offline.map((f) => f.name).join(', ')}. Totals and per-flat figures
-          for these are last-known values, so building totals are understated.
-        </div>
-      )}
 
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
